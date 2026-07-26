@@ -1,0 +1,13 @@
+[package]
+name = "sw-game-noop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Trivial no-op game plugin used to prove registration"
+
+[dependencies]
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+sw-domain = { workspace = true }
+sw-plugin = { workspace = true }
+tracing = { workspace = true }

@@ -1,0 +1,34 @@
+[package]
+name = "sw-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Stacks Wars API and realtime server shell"
+
+[[bin]]
+name = "sw-server"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+axum = { workspace = true }
+chrono = { workspace = true }
+dotenvy = { workspace = true }
+futures = { workspace = true }
+jsonwebtoken = { workspace = true }
+parking_lot = { workspace = true }
+redis = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+sw-domain = { workspace = true }
+sw-game-noop = { workspace = true }
+sw-plugin = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
