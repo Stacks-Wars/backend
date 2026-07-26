@@ -1,0 +1,64 @@
+use std::net::SocketAddr;
+use std::sync::Arc;
+
+use anyhow::Context;
+use sw_game_noop::NoopGameFactory;
+use sw_plugin::GameRegistry;
+use tracing::info;
+
+use sw_server::config::Config;
+use sw_server::infra::{postgres, redis_client};
+use sw_server::routes;
+use sw_server::state::AppState;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    init_tracing();
+
+    let config = Config::from_env().context("load config")?;
+    info!(
+        host = %config.host,
+        port = config.port,
+        "starting stacks wars server"
+    );
+
+    let db = postgres::connect(&config.database_url)
+        .await
+        .context("postgres")?;
+    let redis = redis_client::connect(&config.redis_url)
+        .await
+        .context("redis")?;
+
+    let games = GameRegistry::new();
+    games
+        .register(NoopGameFactory::arc())
+        .context("register noop game")?;
+    info!(registered = games.len(), "game plugins registered");
+
+    let state = AppState::new(config.clone(), db, redis, Arc::new(games));
+    let app = routes::router(state);
+
+    let addr = SocketAddr::from((config.host, config.port));
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .with_context(|| format!("bind {addr}"))?;
+
+    info!(%addr, "listening");
+    axum::serve(listener, app)
+        .await
+        .context("serve http")?;
+
+    Ok(())
+}
+
+fn init_tracing() {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "info,sw_server=debug".into()),
+        )
+        .with_target(true)
+        .compact()
+        .init();
+}
