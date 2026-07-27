@@ -1,4 +1,5 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+use thiserror::Error;
 use uuid::Uuid;
 
 macro_rules! id_newtype {
@@ -42,14 +43,30 @@ id_newtype!(LobbyId);
 id_newtype!(SeasonId);
 id_newtype!(MatchId);
 
-/// Stable string identifier for a registered game plugin (e.g. `"noop"`, `"lexi-wars"`).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// Min / max length for a game slug (URL path + registry key).
+pub const GAME_ID_MIN_LEN: usize = 3;
+/// Enough for names like `lexi-wars` / `ludo-rush`; keeps path segments tidy.
+pub const GAME_ID_MAX_LEN: usize = 32;
+
+/// Stable string identifier for a registered game plugin (e.g. `"checkers"`, `"lexi-wars"`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(transparent)]
-pub struct GameId(pub String);
+pub struct GameId(String);
+
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum GameIdError {
+    #[error("game id must be between {GAME_ID_MIN_LEN} and {GAME_ID_MAX_LEN} characters")]
+    InvalidLength,
+}
 
 impl GameId {
-    pub fn new(id: impl Into<String>) -> Self {
-        Self(id.into())
+    pub fn new(id: impl Into<String>) -> Result<Self, GameIdError> {
+        let id = id.into();
+        let len = id.chars().count();
+        if len < GAME_ID_MIN_LEN || len > GAME_ID_MAX_LEN {
+            return Err(GameIdError::InvalidLength);
+        }
+        Ok(Self(id))
     }
 
     pub fn as_str(&self) -> &str {
@@ -63,14 +80,28 @@ impl std::fmt::Display for GameId {
     }
 }
 
-impl From<&str> for GameId {
-    fn from(value: &str) -> Self {
-        Self(value.to_owned())
+impl<'de> Deserialize<'de> for GameId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        GameId::new(raw).map_err(serde::de::Error::custom)
     }
 }
 
-impl From<String> for GameId {
-    fn from(value: String) -> Self {
-        Self(value)
+impl TryFrom<&str> for GameId {
+    type Error = GameIdError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl TryFrom<String> for GameId {
+    type Error = GameIdError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(value)
     }
 }

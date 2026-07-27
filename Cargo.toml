@@ -3,7 +3,6 @@ resolver = "2"
 members = [
     "crates/sw-domain",
     "crates/sw-plugin",
-    "crates/sw-game-noop",
     "crates/sw-server",
 ]
 default-members = ["crates/sw-server"]
@@ -18,7 +17,6 @@ repository = "https://github.com/stacks-wars/backend"
 [workspace.dependencies]
 sw-domain = { path = "crates/sw-domain" }
 sw-plugin = { path = "crates/sw-plugin" }
-sw-game-noop = { path = "crates/sw-game-noop" }
 
 anyhow = "1.0.104"
 async-trait = "0.1.91"

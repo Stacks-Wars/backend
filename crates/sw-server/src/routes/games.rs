@@ -1,7 +1,7 @@
 use axum::extract::{Path, State};
 use axum::routing::get;
 use axum::{Json, Router};
-use sw_domain::{GameCatalogEntry, GameId};
+use sw_domain::{GameId, GameMetadata};
 
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
@@ -12,19 +12,19 @@ pub fn router() -> Router<AppState> {
         .route("/{game_id}", get(get_game))
 }
 
-/// Real catalog listing backed by the in-process plugin registry.
-async fn list_games(State(state): State<AppState>) -> Json<Vec<GameCatalogEntry>> {
-    Json(state.games.list_catalog())
+/// Catalog listing backed by the in-process plugin registry (empty until games register).
+async fn list_games(State(state): State<AppState>) -> Json<Vec<GameMetadata>> {
+    Json(state.games.list_metadata())
 }
 
 async fn get_game(
     State(state): State<AppState>,
     Path(game_id): Path<String>,
-) -> AppResult<Json<GameCatalogEntry>> {
-    let id = GameId::new(game_id);
+) -> AppResult<Json<GameMetadata>> {
+    let id = GameId::new(game_id).map_err(|err| AppError::BadRequest(err.to_string()))?;
     state
         .games
         .get(&id)
-        .map(|factory| Json(factory.catalog_entry()))
+        .map(|factory| Json(factory.metadata()))
         .ok_or(AppError::NotFound("game not registered"))
 }

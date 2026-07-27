@@ -1,4 +1,4 @@
-use sw_domain::{GameCatalogEntry, GameId};
+use sw_domain::{GameId, GameMetadata};
 
 use crate::{EngineContext, GameEngine, PluginResult};
 
@@ -9,7 +9,7 @@ use crate::{EngineContext, GameEngine, PluginResult};
 pub trait GameFactory: Send + Sync {
     fn game_id(&self) -> GameId;
 
-    fn catalog_entry(&self) -> GameCatalogEntry;
+    fn metadata(&self) -> GameMetadata;
 
     fn create(&self, ctx: EngineContext) -> PluginResult<Box<dyn GameEngine>>;
 }
