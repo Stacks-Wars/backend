@@ -16,7 +16,6 @@ axum = { workspace = true }
 chrono = { workspace = true }
 dotenvy = { workspace = true }
 futures = { workspace = true }
-jsonwebtoken = { workspace = true }
 parking_lot = { workspace = true }
 redis = { workspace = true }
 serde = { workspace = true }

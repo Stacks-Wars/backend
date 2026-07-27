@@ -7,13 +7,10 @@ use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
 use tracing::{debug, info};
 
-use crate::auth::decode_token;
 use crate::state::AppState;
 
 #[derive(Debug, Deserialize)]
 pub struct WsQuery {
-    /// Optional JWT for the socket handshake (shell accepts missing token).
-    pub token: Option<String>,
     pub lobby_id: Option<String>,
 }
 
@@ -23,20 +20,10 @@ pub fn router() -> Router<AppState> {
 
 async fn ws_upgrade(
     ws: WebSocketUpgrade,
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     Query(query): Query<WsQuery>,
 ) -> impl IntoResponse {
-    let authed = query
-        .token
-        .as_deref()
-        .and_then(|token| decode_token(&state.config.jwt_secret, token).ok());
-
-    info!(
-        lobby_id = ?query.lobby_id,
-        authenticated = authed.is_some(),
-        "websocket upgrade"
-    );
-
+    info!(lobby_id = ?query.lobby_id, "websocket upgrade");
     ws.on_upgrade(move |socket| handle_socket(socket, query.lobby_id))
 }
 

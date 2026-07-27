@@ -3,7 +3,7 @@ use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 use tracing::info;
 
-/// Open a Postgres pool and verify connectivity. Required for boot.
+/// Open a Postgres pool, run migrations, and verify connectivity. Required for boot.
 pub async fn connect(database_url: &str) -> Result<PgPool> {
     let pool = PgPoolOptions::new()
         .max_connections(10)
@@ -16,6 +16,14 @@ pub async fn connect(database_url: &str) -> Result<PgPool> {
         .execute(&pool)
         .await
         .context("ping postgres")?;
+
+    // Resolve from CARGO_MANIFEST_DIR so `cargo run -p sw-server` works from any cwd.
+    let migrations_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+    let migrator = sqlx::migrate::Migrator::new(migrations_dir)
+        .await
+        .context("load migrations")?;
+    migrator.run(&pool).await.context("run migrations")?;
+    info!("postgres migrations applied");
 
     info!("postgres pool ready");
     Ok(pool)
