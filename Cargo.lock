@@ -1731,18 +1731,8 @@ dependencies = [
  "chrono",
  "serde",
  "serde_json",
+ "thiserror",
  "uuid",
-]
-
-[[package]]
-name = "sw-game-noop"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "serde_json",
- "sw-domain",
- "sw-plugin",
- "tracing",
 ]
 
 [[package]]
@@ -1773,7 +1763,6 @@ dependencies = [
  "serde_json",
  "sqlx",
  "sw-domain",
- "sw-game-noop",
  "sw-plugin",
  "thiserror",
  "tokio",

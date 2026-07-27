@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use parking_lot::RwLock;
-use sw_domain::{GameCatalogEntry, GameId};
+use sw_domain::{GameId, GameMetadata};
 
 use crate::{GameFactory, PluginError, PluginResult};
 
@@ -31,11 +31,11 @@ impl GameRegistry {
         self.factories.read().get(game_id.as_str()).cloned()
     }
 
-    pub fn list_catalog(&self) -> Vec<GameCatalogEntry> {
+    pub fn list_metadata(&self) -> Vec<GameMetadata> {
         self.factories
             .read()
             .values()
-            .map(|f| f.catalog_entry())
+            .map(|f| f.metadata())
             .collect()
     }
 

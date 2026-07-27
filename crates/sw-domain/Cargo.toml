@@ -9,4 +9,5 @@ description = "Shared domain types for Stacks Wars"
 chrono = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+thiserror = { workspace = true }
 uuid = { workspace = true }

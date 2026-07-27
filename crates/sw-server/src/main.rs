@@ -2,7 +2,6 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::Context;
-use sw_game_noop::NoopGameFactory;
 use sw_plugin::GameRegistry;
 use tracing::info;
 
@@ -31,9 +30,6 @@ async fn main() -> anyhow::Result<()> {
         .context("redis")?;
 
     let games = GameRegistry::new();
-    games
-        .register(NoopGameFactory::arc())
-        .context("register noop game")?;
     info!(registered = games.len(), "game plugins registered");
 
     let state = AppState::new(config.clone(), db, redis, Arc::new(games));
