@@ -8,7 +8,7 @@ pub struct Config {
     pub port: u16,
     pub database_url: String,
     pub redis_url: String,
-    pub jwt_secret: String,
+    pub internal_api_secret: String,
 }
 
 impl Config {
@@ -25,9 +25,12 @@ impl Config {
 
         let database_url = required_env("DATABASE_URL")?;
         let redis_url = required_env("REDIS_URL")?;
-        let jwt_secret = required_env("JWT_SECRET")?;
-        if jwt_secret.len() < 16 {
-            return Err(anyhow!("JWT_SECRET must be at least 16 characters"));
+
+        let internal_api_secret = required_env("INTERNAL_API_SECRET")?;
+        if internal_api_secret.len() < 16 {
+            return Err(anyhow!(
+                "INTERNAL_API_SECRET must be at least 16 characters"
+            ));
         }
 
         Ok(Self {
@@ -35,7 +38,7 @@ impl Config {
             port,
             database_url,
             redis_url,
-            jwt_secret,
+            internal_api_secret,
         })
     }
 }

@@ -22,9 +22,11 @@ Clients (web / mobile) live in a separate monorepo. This repository does **not**
 - **Rust** + **Axum** (HTTP + WebSocket) on **Tokio**
 - **Postgres** via **SQLx** for durable data (required at boot)
 - **Redis** for runtime / lobby state (required at boot)
-- **JWT** helpers / extractors as auth boundaries (no real login flow yet)
+- **Neon Auth** on the frontend owns end-user sessions; this API uses `INTERNAL_API_SECRET` for trusted user sync
 
-`DATABASE_URL`, `REDIS_URL`, and `JWT_SECRET` are required. The process exits on missing config or failed connect/ping.
+`DATABASE_URL`, `REDIS_URL`, and `INTERNAL_API_SECRET` are required. The process exits on missing config or failed connect/ping.
+
+SQL migrations live in `migrations/` (applied to the Neon `dev` branch). App users are upserted via `POST /users` (requires `x-internal-secret`). Custodial wallets live under `GET|POST /users/{id}/custodial-wallet` and are separate from `users.wallet_address` (personal rewards payout address, linked later).
 
 ```
 clients ──HTTP/WS──► sw-server ──hosts──► GameEngine (from plugin crates)
@@ -57,13 +59,33 @@ games.register(MyGameFactory::arc())?;
 
 The shell registers `sw-game-noop` (`game_id = "noop"`) so catalog endpoints return a real entry.
 
+## Migrations
+
+SQL lives in `migrations/` (SQLx format). They also run automatically when the server boots.
+
+```bash
+# one-time: install the CLI
+cargo install sqlx-cli --no-default-features --features rustls,postgres
+
+# from the backend repo root (reads DATABASE_URL from .env)
+cargo migrate          # alias for: cargo sqlx migrate run --source migrations
+cargo migrate-info     # show applied / pending
+cargo migrate-add name # create a new reversible migration pair
+```
+
+Or without the alias:
+
+```bash
+cargo sqlx migrate run --source migrations
+```
+
 ## Run
 
 Requirements: Rust stable (edition 2024 / recent toolchain).
 
 ```bash
 cp .env.example .env
-# set DATABASE_URL, REDIS_URL, JWT_SECRET
+# set DATABASE_URL, REDIS_URL, INTERNAL_API_SECRET
 cargo run -p sw-server
 ```
 
@@ -80,10 +102,10 @@ Useful endpoints:
 ## What is intentionally unfinished
 
 - Lobby create/join/matchmaking, chat, countdown, prize claim
-- SQL schemas / queries and Redis lobby state machines
+- Redis lobby state machines
 - Seasons, wars points aggregation, leaderboards
 - On-chain balance / join / claim verification
-- Real auth (wallet login, token issuance, admin authorization)
+- Neon JWT verification on protected API routes (identity is Neon Auth on the frontend today)
 - Actual game rules (beyond the no-op plugin)
 
 Grow the platform domain-by-domain against these boundaries.
