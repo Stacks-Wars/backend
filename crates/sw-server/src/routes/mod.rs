@@ -7,7 +7,6 @@ mod leaderboard;
 mod lobbies;
 mod seasons;
 mod users;
-mod ws;
 
 use axum::middleware;
 use axum::routing::get;
@@ -17,6 +16,7 @@ use tower_http::trace::TraceLayer;
 
 use crate::middleware::request_boundary;
 use crate::state::AppState;
+use crate::ws;
 
 pub fn router(state: AppState) -> Router {
     Router::new()

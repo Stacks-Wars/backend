@@ -5,6 +5,7 @@ use sqlx::PgPool;
 use sw_plugin::GameRegistry;
 
 use crate::config::Config;
+use crate::ws::{SessionManager, SubscriptionManager};
 
 /// Shared application state injected into HTTP / WS handlers.
 #[derive(Clone)]
@@ -13,6 +14,8 @@ pub struct AppState {
     pub db: PgPool,
     pub redis: ConnectionManager,
     pub games: Arc<GameRegistry>,
+    pub sessions: Arc<SessionManager>,
+    pub subscriptions: Arc<SubscriptionManager>,
 }
 
 impl AppState {
@@ -27,6 +30,8 @@ impl AppState {
             db,
             redis,
             games,
+            sessions: SessionManager::arc(),
+            subscriptions: SubscriptionManager::arc(),
         }
     }
 }
