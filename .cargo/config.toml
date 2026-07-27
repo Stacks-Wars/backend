@@ -1,0 +1,6 @@
+[alias]
+# Apply SQL migrations in ./migrations against DATABASE_URL from .env
+# Requires: cargo install sqlx-cli --no-default-features --features rustls,postgres
+migrate = "sqlx migrate run --source migrations"
+migrate-info = "sqlx migrate info --source migrations"
+migrate-add = "sqlx migrate add -r --source migrations"
