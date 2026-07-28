@@ -40,8 +40,30 @@ macro_rules! id_newtype {
 
 id_newtype!(UserId);
 id_newtype!(LobbyId);
-id_newtype!(SeasonId);
 id_newtype!(MatchId);
+
+/// Auto-increment season id from Postgres `SERIAL`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SeasonId(pub i32);
+
+impl SeasonId {
+    pub fn as_i32(self) -> i32 {
+        self.0
+    }
+}
+
+impl std::fmt::Display for SeasonId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<i32> for SeasonId {
+    fn from(value: i32) -> Self {
+        Self(value)
+    }
+}
 
 /// Min / max length for a game slug (URL path + registry key).
 pub const GAME_ID_MIN_LEN: usize = 3;

@@ -130,7 +130,7 @@ pub struct PlayerState {
     pub state: JoinRequestState,
     pub rank: Option<usize>,
     pub prize: Option<f64>,
-    pub wars_point: Option<f64>,
+    pub wars_point: Option<i64>,
     pub claim_state: Option<ClaimState>,
     pub last_ping: Option<u64>,
     pub joined_at: i64,

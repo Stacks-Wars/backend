@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
+use sw_domain::GameId;
 use uuid::Uuid;
 
 /// Per-player in-memory game tracking (separate from lobby [`crate::dto::PlayerStateWire`]).
@@ -200,14 +201,14 @@ pub struct GameSummary {
 pub struct PlayerResult {
     pub rank: usize,
     pub prize: Option<f64>,
-    pub wars_point: f64,
+    pub wars_point: i64,
 }
 
 /// Context for calculating wars points for a player result.
 #[derive(Debug, Clone)]
 pub struct WarsPointContext {
     pub user_id: Uuid,
-    pub game_id: Option<Uuid>,
+    pub game_id: Option<GameId>,
     pub rank: usize,
     pub prize: Option<f64>,
     pub participants: usize,
@@ -220,9 +221,9 @@ pub struct WarsPointContext {
     pub token_contract_id: Option<String>,
 }
 
-pub fn calculate_wars_point(ctx: &WarsPointContext) -> f64 {
-    let base_points = (ctx.participants as f64 - ctx.rank as f64 + 1.0) * 2.0;
-    base_points.min(50.0).max(0.0)
+pub fn calculate_wars_point(ctx: &WarsPointContext) -> i64 {
+    let base_points = (ctx.participants as i64 - ctx.rank as i64 + 1) * 2;
+    base_points.clamp(0, 50)
 }
 
 #[cfg(test)]

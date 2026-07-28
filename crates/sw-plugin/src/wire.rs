@@ -16,6 +16,6 @@ pub enum UserRoomMessage {
     GameOver {
         rank: usize,
         prize: Option<f64>,
-        wars_point: f64,
+        wars_point: i64,
     },
 }
