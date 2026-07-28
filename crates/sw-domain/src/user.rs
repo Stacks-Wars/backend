@@ -8,6 +8,7 @@ use crate::UserId;
 /// `wallet_address` is the user's personal Stacks address for receiving rewards
 /// (linked later). Server automation uses a separate `custodial_wallets` row.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct User {
     pub id: UserId,
     pub username: Option<String>,

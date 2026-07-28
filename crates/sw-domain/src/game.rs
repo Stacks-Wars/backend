@@ -5,6 +5,7 @@ use crate::{GameId, UserId};
 
 /// Platform fee taken from a match pot, as a whole-number percent (0–5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FeeConfig {
     percentage: u8,
 }
@@ -44,6 +45,7 @@ pub enum GameCategory {
 
 /// In-code metadata for a registered game plugin.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GameMetadata {
     pub id: GameId,
     pub name: String,

@@ -1,7 +1,7 @@
 //! Data access boundaries.
-//!
-//! Repositories are trait stubs only — no SQL or Redis business logic yet.
 
 pub mod lobbies;
+pub mod lobby_runtime;
+pub mod lobby_status;
 pub mod seasons;
 pub mod users;
