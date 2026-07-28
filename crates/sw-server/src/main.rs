@@ -6,6 +6,7 @@ use sw_plugin::GameRegistry;
 use tracing::info;
 
 use sw_server::config::Config;
+use sw_server::games;
 use sw_server::infra::{postgres, redis_client};
 use sw_server::routes;
 use sw_server::state::AppState;
@@ -29,10 +30,11 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("redis")?;
 
-    let games = GameRegistry::new();
-    info!(registered = games.len(), "game plugins registered");
+    let game_registry = GameRegistry::new();
+    games::register_games(&game_registry).context("register games")?;
+    info!(registered = game_registry.len(), "game plugins registered");
 
-    let state = AppState::new(config.clone(), db, redis, Arc::new(games));
+    let state = AppState::new(config.clone(), db, redis, Arc::new(game_registry));
     let app = routes::router(state);
 
     let addr = SocketAddr::from((config.host, config.port));

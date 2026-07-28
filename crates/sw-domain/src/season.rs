@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::{SeasonId, UserId};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Season {
     pub id: SeasonId,
     pub name: String,
@@ -14,6 +15,7 @@ pub struct Season {
 
 /// Accumulated wars points for a user within a season.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WarsPoints {
     pub season_id: SeasonId,
     pub user_id: UserId,
@@ -21,6 +23,7 @@ pub struct WarsPoints {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LeaderboardEntry {
     pub rank: u32,
     pub user_id: UserId,

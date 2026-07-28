@@ -7,6 +7,7 @@ use serde::Serialize;
 use crate::state::AppState;
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct HealthResponse {
     pub status: &'static str,
     pub service: &'static str,

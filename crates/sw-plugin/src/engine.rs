@@ -1,42 +1,55 @@
 use async_trait::async_trait;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sw_domain::{GameId, LobbyId, UserId};
 
-use crate::{GameHost, GameMessage, PlayerEvent, PluginResult};
+use crate::{GameHostRef, PluginResult};
+
+/// Marker for typed client actions.
+pub trait GameAction: DeserializeOwned + Send + Sync + 'static {}
+
+/// Marker for typed engine events.
+pub trait GameEvent: Serialize + Send + Sync + 'static {}
 
 /// Inputs provided when constructing an engine for a lobby.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct EngineContext {
     pub lobby_id: LobbyId,
     pub game_id: GameId,
     pub player_ids: Vec<UserId>,
-    /// Opaque lobby settings from the platform.
-    pub settings: serde_json::Value,
+    pub creator_id: UserId,
+    pub entry_amount: Option<f64>,
+    pub current_amount: Option<f64>,
+    pub is_sponsored: bool,
+    pub settings: Value,
 }
 
-/// Per-lobby game runtime hosted by the server.
+/// Per-lobby game runtime. Games own their background loops inside [`Self::start`].
 #[async_trait]
 pub trait GameEngine: Send + Sync {
     fn game_id(&self) -> &GameId;
 
-    /// Called once when the lobby transitions into active play.
-    async fn start(&mut self, host: &dyn GameHost) -> PluginResult<()>;
+    /// Initialize roster/board and spawn any timeout / turn loops.
+    async fn start(&mut self, host: GameHostRef) -> PluginResult<()>;
 
-    /// Player join / leave / ready style events.
-    async fn on_player_event(
+    async fn handle_action(
         &mut self,
-        host: &dyn GameHost,
-        event: PlayerEvent,
+        host: GameHostRef,
+        user_id: UserId,
+        action: Value,
     ) -> PluginResult<()>;
 
-    /// Client → engine gameplay messages.
-    async fn on_client_message(
+    async fn handle_player_quit(
         &mut self,
-        host: &dyn GameHost,
-        from: UserId,
-        message: GameMessage,
+        host: GameHostRef,
+        user_id: UserId,
     ) -> PluginResult<()>;
 
-    /// Graceful teardown (cancel, disconnect storm, admin abort, …).
-    async fn shutdown(&mut self, host: &dyn GameHost) -> PluginResult<()>;
+    async fn get_game_state(&self, user_id: Option<UserId>) -> PluginResult<Value>;
+
+    fn is_finished(&self) -> bool;
+
+    async fn shutdown(&mut self, host: GameHostRef) -> PluginResult<()>;
 }

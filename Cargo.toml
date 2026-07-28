@@ -5,6 +5,9 @@ members = [
     "crates/sw-plugin",
     "crates/sw-server",
 ]
+
+# Game crates live at the workspace root sibling paths (path deps from sw-server).
+
 default-members = ["crates/sw-server"]
 
 [workspace.package]
@@ -17,6 +20,10 @@ repository = "https://github.com/stacks-wars/backend"
 [workspace.dependencies]
 sw-domain = { path = "crates/sw-domain" }
 sw-plugin = { path = "crates/sw-plugin" }
+sw_checkers = { path = "../checkers" }
+sw_lexi_wars = { path = "../lexi-wars" }
+sw_ludo = { path = "../ludo" }
+sw_ludo_rush = { path = "../ludo-rush" }
 
 anyhow = "1.0.104"
 async-trait = "0.1.91"

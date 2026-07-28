@@ -23,6 +23,7 @@ pub fn router() -> Router<AppState> {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct UpsertUserBody {
     email: String,
     display_name: Option<String>,
@@ -31,6 +32,7 @@ struct UpsertUserBody {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct CreateCustodialWalletBody {
     stx_address: String,
     public_key: String,
@@ -40,6 +42,7 @@ struct CreateCustodialWalletBody {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct UserResponse {
     id: Uuid,
     username: Option<String>,
@@ -71,6 +74,7 @@ impl From<User> for UserResponse {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct CustodialWalletResponse {
     user_id: Uuid,
     stx_address: String,

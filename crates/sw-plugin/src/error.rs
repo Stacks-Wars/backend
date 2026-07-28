@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Clone)]
 pub enum PluginError {
     #[error("unknown game id: {0}")]
     UnknownGame(String),
@@ -16,6 +16,21 @@ pub enum PluginError {
 
     #[error("invalid lobby configuration: {0}")]
     InvalidConfig(String),
+
+    #[error("serialization error: {0}")]
+    Serialization(String),
+
+    #[error("deserialization error: {0}")]
+    Deserialization(String),
+
+    #[error("bad request: {0}")]
+    BadRequest(String),
+
+    #[error("not found: {0}")]
+    NotFound(String),
+
+    #[error("internal error")]
+    Internal,
 }
 
 pub type PluginResult<T> = Result<T, PluginError>;

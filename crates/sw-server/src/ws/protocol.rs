@@ -64,7 +64,7 @@ impl ServerMessage {
     pub fn connected(connection_id: Uuid) -> Self {
         Self {
             kind: "connected".into(),
-            payload: serde_json::json!({ "connection_id": connection_id }),
+            payload: serde_json::json!({ "connectionId": connection_id }),
         }
     }
 
