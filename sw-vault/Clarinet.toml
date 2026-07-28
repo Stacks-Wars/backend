@@ -8,6 +8,9 @@ cache_dir = './.cache'
 [[project.requirements]]
 contract_id = 'SP3FBR2AGK5H9QBDH3EEN6DF8EK8JY7RX8QJ5SVTE.sip-010-trait-ft-standard'
 
+[[project.requirements]]
+contract_id = 'SP120SBRBQJ00MCWS7TM5R8WJNTTKD5K0HFRC2CNE.usdcx'
+
 [contracts.sponsored-usdcx-vault]
 path = 'contracts/sponsored-usdcx-vault.clar'
 clarity_version = 3
