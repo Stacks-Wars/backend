@@ -6,6 +6,7 @@ use sw_plugin::GameRegistry;
 use tracing::info;
 
 use sw_server::config::Config;
+use sw_server::data::seasons::PgSeasonRepo;
 use sw_server::games;
 use sw_server::infra::{postgres, redis_client};
 use sw_server::routes;
@@ -26,6 +27,10 @@ async fn main() -> anyhow::Result<()> {
     let db = postgres::connect(&config.database_url)
         .await
         .context("postgres")?;
+    PgSeasonRepo::new(db.clone())
+        .seed_year_to_current_quarter_if_empty()
+        .await
+        .context("seed seasons")?;
     let redis = redis_client::connect(&config.redis_url)
         .await
         .context("redis")?;
