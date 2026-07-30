@@ -1,108 +1,283 @@
-//! Server-side [`GameHost`] adapter.
-//!
-//! Broadcast is still stubbed; `save_player_result` persists season stats.
+//! Server-side [`GameHost`] — stats + on-chain claim intents on finish.
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use parking_lot::Mutex;
+use redis::aio::ConnectionManager;
 use serde_json::Value;
 use sqlx::PgPool;
-use sw_domain::{usdcx_to_micro, GameId, LobbyId, SeasonId, UserId};
+use sw_domain::{GameId, LobbyId, LobbyStatus, UserId};
 use sw_plugin::{
     calculate_wars_point, GameHost, MatchResult, PlayerResult, PlayerStateWire, PluginError,
     PluginResult, WarsPointContext,
 };
 use tracing::{error, info};
+use uuid::Uuid;
 
+use crate::data::lobbies::PgLobbyRepo;
+use crate::data::lobby_runtime::{LobbyStateRepo, PlayerStateRepo};
 use crate::data::seasons::{PgSeasonRepo, SeasonRepo};
 use crate::data::stats::{PgStatsRepo, RecordResultInput};
+use crate::data::users::PgUserRepo;
+use crate::services::vault_oracle::{build_claim_intent, split_pot};
+use crate::ws::{SessionManager, SubscriptionManager};
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ServerGameHost {
     pub lobby_id: LobbyId,
+    pub lobby_path: String,
     pub db: PgPool,
     pub game_id: GameId,
     pub entry_amount_micro: i64,
+    pub pot_micro: i64,
+    pub creator_id: UserId,
+    pub fee_percentage: u8,
+    pub redis: ConnectionManager,
+    pub subscriptions: Arc<SubscriptionManager>,
+    pub sessions: Arc<SessionManager>,
+    settled: Mutex<bool>,
 }
 
 impl ServerGameHost {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         lobby_id: LobbyId,
+        lobby_path: String,
         db: PgPool,
         game_id: GameId,
         entry_amount_micro: i64,
+        pot_micro: i64,
+        creator_id: UserId,
+        fee_percentage: u8,
+        redis: ConnectionManager,
+        subscriptions: Arc<SubscriptionManager>,
+        sessions: Arc<SessionManager>,
     ) -> Self {
         Self {
             lobby_id,
+            lobby_path,
             db,
             game_id,
             entry_amount_micro,
+            pot_micro,
+            creator_id,
+            fee_percentage,
+            redis,
+            subscriptions,
+            sessions,
+            settled: Mutex::new(false),
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn arc(
         lobby_id: LobbyId,
+        lobby_path: String,
         db: PgPool,
         game_id: GameId,
         entry_amount_micro: i64,
+        pot_micro: i64,
+        creator_id: UserId,
+        fee_percentage: u8,
+        redis: ConnectionManager,
+        subscriptions: Arc<SubscriptionManager>,
+        sessions: Arc<SessionManager>,
     ) -> Arc<Self> {
-        Arc::new(Self::new(lobby_id, db, game_id, entry_amount_micro))
+        Arc::new(Self::new(
+            lobby_id,
+            lobby_path,
+            db,
+            game_id,
+            entry_amount_micro,
+            pot_micro,
+            creator_id,
+            fee_percentage,
+            redis,
+            subscriptions,
+            sessions,
+        ))
     }
 
-    pub fn from_entry_dollars(
-        lobby_id: LobbyId,
-        db: PgPool,
-        game_id: GameId,
-        entry_amount: Option<f64>,
-    ) -> Arc<Self> {
-        let entry_amount_micro = entry_amount.map(usdcx_to_micro).unwrap_or(0);
-        Self::arc(lobby_id, db, game_id, entry_amount_micro)
+    async fn custodial_address(&self, user_id: UserId) -> Option<String> {
+        PgUserRepo::new(self.db.clone())
+            .get_custodial_wallet(user_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|w| w.stx_address)
+    }
+
+    async fn settle(&self, result: &MatchResult) -> PluginResult<()> {
+        {
+            let mut guard = self.settled.lock();
+            if *guard {
+                return Ok(());
+            }
+            *guard = true;
+        }
+
+        let match_id = Uuid::now_v7().to_string();
+        let pot = self.pot_micro;
+        let (platform_fee_amount, dev_fee_amount, _) =
+            split_pot(pot, self.fee_percentage);
+
+        let winner = result
+            .winners
+            .first()
+            .copied()
+            .or_else(|| result.rankings.first().copied());
+
+        let winner_principal = match winner {
+            Some(w) => self.custodial_address(w).await,
+            None => None,
+        };
+        let dev_principal = self.custodial_address(self.creator_id).await;
+
+        let intent = match (winner, winner_principal, dev_principal) {
+            (Some(w), Some(wp), Some(dp)) if pot > 0 => {
+                build_claim_intent(pot, self.fee_percentage, w, wp, dp)
+            }
+            _ => None,
+        };
+
+        let _ = PgLobbyRepo::new(self.db.clone())
+            .set_status(self.lobby_id, LobbyStatus::Finished)
+            .await;
+
+        if let Ok(Some(mut st)) = LobbyStateRepo::new(self.redis.clone())
+            .get(self.lobby_id)
+            .await
+        {
+            st.status = LobbyStatus::Finished;
+            st.finished_at = Some(chrono::Utc::now().timestamp());
+            let _ = LobbyStateRepo::new(self.redis.clone()).set(&st).await;
+        }
+
+        let topic = format!("lobby:{}", self.lobby_id);
+        let claims = match &intent {
+            Some(c) => vec![serde_json::json!({
+                "userId": c.user_id.as_uuid().to_string(),
+                "principal": c.principal,
+                "amountMicro": c.amount_micro,
+                "nonce": c.nonce,
+                "devWallet": c.dev_wallet,
+                "devFee": c.dev_fee,
+                "role": "winner",
+            })],
+            None => Vec::new(),
+        };
+        let msg = crate::ws::ServerMessage {
+            kind: "lobby.finished".into(),
+            payload: serde_json::json!({
+                "lobbyId": self.lobby_id,
+                "lobbyPath": self.lobby_path,
+                "matchId": match_id,
+                "winners": result.winners,
+                "needsOnChainClaim": intent.is_some(),
+                "claims": claims,
+            }),
+        };
+        self.subscriptions.publish(&self.sessions, &topic, msg);
+
+        info!(
+            lobby_id = %self.lobby_id,
+            %match_id,
+            pot,
+            platform_fee_amount,
+            dev_fee_amount,
+            claims = intent.is_some() as u8,
+            "match settled (on-chain claim intent)"
+        );
+        Ok(())
     }
 }
 
 #[async_trait]
 impl GameHost for ServerGameHost {
     async fn broadcast(&self, payload: Value) -> PluginResult<()> {
-        info!(lobby_id = %self.lobby_id, payload = %payload, "host.broadcast (stub)");
+        let topic = format!("lobby:{}", self.lobby_id);
+        self.subscriptions.publish(
+            &self.sessions,
+            &topic,
+            crate::ws::ServerMessage {
+                kind: "lobby.event".into(),
+                payload,
+            },
+        );
         Ok(())
     }
 
     async fn send_to(&self, user_id: UserId, payload: Value) -> PluginResult<()> {
-        info!(
-            lobby_id = %self.lobby_id,
-            %user_id,
-            payload = %payload,
-            "host.send_to (stub)"
+        let topic = format!("user:{}", user_id.as_uuid());
+        self.subscriptions.publish(
+            &self.sessions,
+            &topic,
+            crate::ws::ServerMessage {
+                kind: "user.event".into(),
+                payload,
+            },
         );
         Ok(())
     }
 
     async fn send_except(&self, except_user_id: UserId, payload: Value) -> PluginResult<()> {
-        info!(
-            lobby_id = %self.lobby_id,
-            %except_user_id,
-            payload = %payload,
-            "host.send_except (stub)"
-        );
-        Ok(())
+        let _ = except_user_id;
+        self.broadcast(payload).await
     }
 
     async fn complete_match(&self, result: MatchResult) -> PluginResult<()> {
-        info!(
-            lobby_id = %self.lobby_id,
-            winners = result.winners.len(),
-            "host.complete_match (stub)"
-        );
-        Ok(())
+        self.settle(&result).await
     }
 
     async fn finish_lobby(&self) -> PluginResult<()> {
-        info!(lobby_id = %self.lobby_id, "host.finish_lobby (stub)");
-        Ok(())
+        let players = self.get_player_states().await.unwrap_or_default();
+        let mut rankings: Vec<UserId> = players
+            .iter()
+            .filter_map(|p| p.rank.map(|r| (r, UserId::from(p.user_id))))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|(_, u)| u)
+            .collect();
+        if rankings.is_empty() {
+            rankings = players
+                .iter()
+                .map(|p| UserId::from(p.user_id))
+                .collect();
+        }
+        let winners = rankings.first().copied().into_iter().collect();
+        self.settle(&MatchResult {
+            winners,
+            rankings,
+            stats: serde_json::json!({}),
+        })
+        .await
     }
 
     async fn get_player_states(&self) -> PluginResult<Vec<PlayerStateWire>> {
-        Ok(vec![])
+        let players = PlayerStateRepo::new(self.redis.clone())
+            .list(self.lobby_id)
+            .await
+            .map_err(|e| PluginError::Host(e.to_string()))?;
+        Ok(players
+            .into_iter()
+            .map(|p| PlayerStateWire {
+                user_id: p.user_id.as_uuid(),
+                username: p.username,
+                display_name: p.display_name,
+                lobby_id: self.lobby_id.as_uuid(),
+                status: sw_plugin::PlayerStatus::Joined,
+                state: sw_plugin::JoinRequestState::Accepted,
+                rank: p.rank,
+                prize_micro: p.prize_micro,
+                wars_point: p.wars_point,
+                last_ping: p.last_ping,
+                joined_at: p.joined_at,
+                updated_at: p.updated_at,
+                is_creator: p.is_creator,
+                ready: p.ready,
+            })
+            .collect())
     }
 
     async fn save_player_result(
@@ -138,7 +313,7 @@ impl GameHost for ServerGameHost {
             .record_result(RecordResultInput {
                 user_id: UserId::from(ctx.user_id),
                 game_id: game_id.clone(),
-                season_id: SeasonId(season.id.as_i32()),
+                season_id: season.id,
                 points: wars_point,
                 is_winner: won,
                 prize_dollars: ctx.prize,
@@ -150,20 +325,10 @@ impl GameHost for ServerGameHost {
                 lobby_id = %self.lobby_id,
                 user_id = %ctx.user_id,
                 error = %err,
-                "host.save_player_result stats upsert failed"
+                "save_player_result stats failed"
             );
             return Err(PluginError::Host(err.to_string()));
         }
-
-        info!(
-            lobby_id = %self.lobby_id,
-            user_id = %ctx.user_id,
-            game_id = %game_id,
-            season_id = %season.id,
-            is_winner = won,
-            wars_point,
-            "host.save_player_result"
-        );
 
         Ok(PlayerResult {
             rank: ctx.rank,

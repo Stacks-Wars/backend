@@ -1,21 +1,21 @@
 use axum::extract::{Path, State};
-use axum::http::HeaderMap;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::auth::AuthUser;
 use crate::data::users::{CustodialWalletInput, PgUserRepo, UpsertUserInput};
 use crate::error::{AppError, AppResult};
+use crate::services::neon_jwt::parse_neon_sub;
 use crate::state::AppState;
-use sw_domain::User;
+use sw_domain::{User, UserId};
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/", get(list_users).post(upsert_user))
+        .route("/", post(upsert_user))
         .route("/{user_id}", get(get_user))
-        .route("/{user_id}/stats", get(user_stats))
         .route(
             "/{user_id}/custodial-wallet",
             get(get_custodial_wallet).post(create_custodial_wallet),
@@ -25,6 +25,8 @@ pub fn router() -> Router<AppState> {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct UpsertUserBody {
+    /// Neon Auth `sub` (UUID v7). Must match Bearer token subject.
+    id: Uuid,
     email: String,
     display_name: Option<String>,
     avatar_url: Option<String>,
@@ -82,23 +84,15 @@ struct CustodialWalletResponse {
     network: String,
 }
 
-fn require_internal_secret(headers: &HeaderMap, expected: &str) -> AppResult<()> {
-    let provided = headers
-        .get("x-internal-secret")
-        .and_then(|value| value.to_str().ok());
-
-    match provided {
-        Some(value) if value == expected => Ok(()),
-        _ => Err(AppError::Unauthorized("invalid internal secret")),
-    }
-}
-
 async fn upsert_user(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    auth: AuthUser,
     Json(body): Json<UpsertUserBody>,
 ) -> AppResult<Json<UserResponse>> {
-    require_internal_secret(&headers, &state.config.internal_api_secret)?;
+    let id = parse_neon_sub(&body.id.to_string())?;
+    if id != auth.user_id.as_uuid() {
+        return Err(AppError::Unauthorized("token subject mismatch"));
+    }
 
     let email = body.email.trim().to_lowercase();
     if email.is_empty() || !email.contains('@') {
@@ -108,6 +102,7 @@ async fn upsert_user(
     let repo = PgUserRepo::new(state.db.clone());
     let user = repo
         .upsert(UpsertUserInput {
+            id: UserId::from(id),
             email,
             display_name: body
                 .display_name
@@ -124,10 +119,6 @@ async fn upsert_user(
     Ok(Json(UserResponse::from(user)))
 }
 
-async fn list_users() -> AppResult<()> {
-    Err(AppError::NotImplemented("list users"))
-}
-
 async fn get_user(
     State(state): State<AppState>,
     Path(user_id): Path<Uuid>,
@@ -141,16 +132,12 @@ async fn get_user(
     Ok(Json(UserResponse::from(user)))
 }
 
-async fn user_stats() -> AppResult<()> {
-    Err(AppError::NotImplemented("user stats"))
-}
-
 async fn get_custodial_wallet(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    auth: AuthUser,
     Path(user_id): Path<Uuid>,
 ) -> AppResult<Json<CustodialWalletResponse>> {
-    require_internal_secret(&headers, &state.config.internal_api_secret)?;
+    auth.require_self(user_id)?;
 
     let repo = PgUserRepo::new(state.db.clone());
     let wallet = repo
@@ -168,11 +155,11 @@ async fn get_custodial_wallet(
 
 async fn create_custodial_wallet(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    auth: AuthUser,
     Path(user_id): Path<Uuid>,
     Json(body): Json<CreateCustodialWalletBody>,
 ) -> AppResult<Json<CustodialWalletResponse>> {
-    require_internal_secret(&headers, &state.config.internal_api_secret)?;
+    auth.require_self(user_id)?;
 
     if body.stx_address.trim().is_empty()
         || body.public_key.trim().is_empty()

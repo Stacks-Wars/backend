@@ -11,13 +11,6 @@ pub enum PlayerStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "status", content = "data", rename_all = "camelCase")]
-pub enum ClaimState {
-    Claimed { tx_id: String },
-    NotClaimed,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum JoinRequestState {
     Pending,
@@ -36,11 +29,13 @@ pub struct PlayerStateWire {
     pub status: PlayerStatus,
     pub state: JoinRequestState,
     pub rank: Option<usize>,
-    pub prize: Option<f64>,
+    /// Prize in micro-USDCx.
+    pub prize_micro: Option<i64>,
     pub wars_point: Option<i64>,
-    pub claim_state: Option<ClaimState>,
     pub last_ping: Option<u64>,
     pub joined_at: i64,
     pub updated_at: i64,
     pub is_creator: bool,
+    #[serde(default)]
+    pub ready: bool,
 }

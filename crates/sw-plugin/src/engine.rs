@@ -20,8 +20,10 @@ pub struct EngineContext {
     pub game_id: GameId,
     pub player_ids: Vec<UserId>,
     pub creator_id: UserId,
-    pub entry_amount: Option<f64>,
-    pub current_amount: Option<f64>,
+    /// Entry fee in micro-USDCx (0 = free / unset).
+    pub entry_amount_micro: i64,
+    /// Pot in micro-USDCx.
+    pub pot_micro: i64,
     pub is_sponsored: bool,
     pub settings: Value,
 }

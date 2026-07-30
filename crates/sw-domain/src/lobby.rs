@@ -43,37 +43,7 @@ pub enum JoinRequestState {
     Rejected,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "status", content = "data", rename_all = "camelCase")]
-pub enum ClaimState {
-    Claimed { tx_id: String },
-    NotClaimed,
-}
-
-/// Optional on-chain / custodial address (USDCx contract later).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct WalletAddress(pub String);
-
-impl WalletAddress {
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl From<String> for WalletAddress {
-    fn from(value: String) -> Self {
-        Self(value)
-    }
-}
-
-impl From<&str> for WalletAddress {
-    fn from(value: &str) -> Self {
-        Self(value.to_owned())
-    }
-}
-
-/// Durable lobby row (Postgres).
+/// Durable lobby row (Postgres). Amounts are micro-USDCx.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Lobby {
@@ -83,9 +53,10 @@ pub struct Lobby {
     pub description: Option<String>,
     pub game_id: GameId,
     pub creator_id: UserId,
-    pub entry_amount: Option<f64>,
-    pub current_amount: Option<f64>,
-    pub contract_address: Option<WalletAddress>,
+    /// Per-player entry fee in micro-USDCx (0 = free).
+    pub entry_amount_micro: i64,
+    /// Running pot in micro-USDCx (sum of reserved entries while waiting / in play).
+    pub pot_micro: i64,
     pub is_private: bool,
     pub is_sponsored: bool,
     pub status: LobbyStatus,
@@ -129,13 +100,14 @@ pub struct PlayerState {
     pub status: PlayerStatus,
     pub state: JoinRequestState,
     pub rank: Option<usize>,
-    pub prize: Option<f64>,
+    /// Prize in micro-USDCx (set on settle).
+    pub prize_micro: Option<i64>,
     pub wars_point: Option<i64>,
-    pub claim_state: Option<ClaimState>,
     pub last_ping: Option<u64>,
     pub joined_at: i64,
     pub updated_at: i64,
     pub is_creator: bool,
+    pub ready: bool,
 }
 
 impl PlayerState {
@@ -152,13 +124,36 @@ impl PlayerState {
             status: PlayerStatus::Joined,
             state: JoinRequestState::Accepted,
             rank: None,
-            prize: None,
+            prize_micro: None,
             wars_point: None,
-            claim_state: None,
             last_ping: Some(now as u64),
             joined_at: now,
             updated_at: now,
             is_creator: true,
+            ready: false,
+        }
+    }
+
+    pub fn joiner(
+        user_id: UserId,
+        username: Option<String>,
+        display_name: Option<String>,
+    ) -> Self {
+        let now = Utc::now().timestamp();
+        Self {
+            user_id,
+            username,
+            display_name,
+            status: PlayerStatus::Joined,
+            state: JoinRequestState::Accepted,
+            rank: None,
+            prize_micro: None,
+            wars_point: None,
+            last_ping: Some(now as u64),
+            joined_at: now,
+            updated_at: now,
+            is_creator: false,
+            ready: false,
         }
     }
 }

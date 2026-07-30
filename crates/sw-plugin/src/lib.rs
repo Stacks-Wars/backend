@@ -14,7 +14,7 @@ mod nop_host;
 mod registry;
 mod wire;
 
-pub use dto::{ClaimState, JoinRequestState, PlayerStateWire, PlayerStatus};
+pub use dto::{JoinRequestState, PlayerStateWire, PlayerStatus};
 pub use engine::{EngineContext, GameAction, GameEngine, GameEvent};
 pub use error::{PluginError, PluginResult};
 pub use factory::GameFactory;

@@ -15,16 +15,12 @@ const OUTBOUND_BUFFER: usize = 64;
 
 #[derive(Debug)]
 pub struct Session {
-    #[allow(dead_code)]
     pub id: ConnectionId,
-    /// Bound later when auth joins the socket; unused this phase.
-    #[allow(dead_code)]
     pub user_id: Option<UserId>,
     tx: mpsc::Sender<ServerMessage>,
 }
 
 impl Session {
-    #[allow(dead_code)]
     pub fn sender(&self) -> mpsc::Sender<ServerMessage> {
         self.tx.clone()
     }
@@ -52,6 +48,22 @@ impl SessionManager {
         self.sessions.write().insert(id, session);
         debug!(%id, "ws session registered");
         (id, rx)
+    }
+
+    pub fn bind_user(&self, connection_id: ConnectionId, user_id: UserId) -> bool {
+        let mut sessions = self.sessions.write();
+        let Some(session) = sessions.get_mut(&connection_id) else {
+            return false;
+        };
+        session.user_id = Some(user_id);
+        true
+    }
+
+    pub fn user_id(&self, connection_id: ConnectionId) -> Option<UserId> {
+        self.sessions
+            .read()
+            .get(&connection_id)
+            .and_then(|s| s.user_id)
     }
 
     pub fn remove(&self, connection_id: ConnectionId) -> bool {

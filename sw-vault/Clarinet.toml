@@ -10,21 +10,15 @@ contract_id = 'SP3FBR2AGK5H9QBDH3EEN6DF8EK8JY7RX8QJ5SVTE.sip-010-trait-ft-standa
 
 [[project.requirements]]
 contract_id = 'SP120SBRBQJ00MCWS7TM5R8WJNTTKD5K0HFRC2CNE.usdcx'
-
-[contracts.sponsored-usdcx-vault]
-path = 'contracts/sponsored-usdcx-vault.clar'
-clarity_version = 3
-epoch = 'latest'
+[contracts.sw-vault-v1]
+path = 'contracts/sw-vault-v1.clar'
+clarity_version = 4
+epoch = '3.3'
 
 [contracts.usdcx-token]
 path = 'contracts/usdcx-token.clar'
 clarity_version = 3
-epoch = 'latest'
-
-[contracts.usdcx-vault]
-path = 'contracts/usdcx-vault.clar'
-clarity_version = 3
-epoch = 'latest'
+epoch = '3.2'
 [repl.analysis]
 passes = ['check_checker']
 

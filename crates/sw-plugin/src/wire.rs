@@ -15,7 +15,7 @@ pub enum UserRoomMessage {
     #[serde(rename_all = "camelCase")]
     GameOver {
         rank: usize,
-        prize: Option<f64>,
+        prize_micro: Option<i64>,
         wars_point: i64,
     },
 }
