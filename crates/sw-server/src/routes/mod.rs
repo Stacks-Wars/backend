@@ -1,12 +1,11 @@
 mod admin;
-mod auth;
-mod chain;
 mod games;
 mod health;
 mod leaderboard;
 mod lobbies;
 mod seasons;
 mod users;
+mod wallet;
 
 use axum::middleware;
 use axum::routing::get;
@@ -22,13 +21,12 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/", get(health::root))
         .merge(health::router())
-        .nest("/auth", auth::router())
         .nest("/users", users::router())
         .nest("/games", games::router())
         .nest("/lobbies", lobbies::router())
         .nest("/seasons", seasons::router())
         .nest("/leaderboard", leaderboard::router())
-        .nest("/chain", chain::router())
+        .nest("/wallet", wallet::router())
         .nest("/admin", admin::router())
         .merge(ws::router())
         .layer(middleware::from_fn(request_boundary))

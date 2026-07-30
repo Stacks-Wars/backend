@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
-use sw_domain::{GameId, Lobby, LobbyId, UserId, WalletAddress};
+use sw_domain::{GameId, Lobby, LobbyId, LobbyStatus, UserId};
 use uuid::Uuid;
 
 use crate::data::lobby_status::DbLobbyStatus;
@@ -14,9 +14,8 @@ struct LobbyRow {
     description: Option<String>,
     game_id: String,
     creator_id: Uuid,
-    entry_amount: Option<f64>,
-    current_amount: Option<f64>,
-    contract_address: Option<String>,
+    entry_amount_micro: i64,
+    pot_micro: i64,
     is_private: bool,
     is_sponsored: bool,
     status: DbLobbyStatus,
@@ -34,9 +33,8 @@ impl LobbyRow {
             description: self.description,
             game_id: GameId::new(self.game_id).map_err(|e| AppError::BadRequest(e.to_string()))?,
             creator_id: UserId::from(self.creator_id),
-            entry_amount: self.entry_amount,
-            current_amount: self.current_amount,
-            contract_address: self.contract_address.map(WalletAddress::from),
+            entry_amount_micro: self.entry_amount_micro,
+            pot_micro: self.pot_micro,
             is_private: self.is_private,
             is_sponsored: self.is_sponsored,
             status: self.status.into(),
@@ -63,20 +61,19 @@ impl PgLobbyRepo {
             .map(|id| id.as_uuid())
             .collect();
         let status = DbLobbyStatus::from(lobby.status);
-        let contract = lobby.contract_address.as_ref().map(|a| a.as_str());
 
         sqlx::query(
             r#"
             INSERT INTO lobbies (
                 id, path, name, description, game_id, creator_id,
-                entry_amount, current_amount, contract_address,
+                entry_amount_micro, pot_micro,
                 is_private, is_sponsored, status, participants,
                 created_at, updated_at
             ) VALUES (
                 $1, $2, $3, $4, $5, $6,
-                $7, $8, $9,
-                $10, $11, $12, $13,
-                $14, $15
+                $7, $8,
+                $9, $10, $11, $12,
+                $13, $14
             )
             "#,
         )
@@ -86,9 +83,8 @@ impl PgLobbyRepo {
         .bind(&lobby.description)
         .bind(lobby.game_id.as_str())
         .bind(lobby.creator_id.as_uuid())
-        .bind(lobby.entry_amount)
-        .bind(lobby.current_amount)
-        .bind(contract)
+        .bind(lobby.entry_amount_micro)
+        .bind(lobby.pot_micro)
         .bind(lobby.is_private)
         .bind(lobby.is_sponsored)
         .bind(status)
@@ -106,7 +102,7 @@ impl PgLobbyRepo {
         let row = sqlx::query_as::<_, LobbyRow>(
             r#"
             SELECT id, path, name, description, game_id, creator_id,
-                   entry_amount, current_amount, contract_address,
+                   entry_amount_micro, pot_micro,
                    is_private, is_sponsored, status, participants,
                    created_at, updated_at
             FROM lobbies
@@ -125,7 +121,7 @@ impl PgLobbyRepo {
         let row = sqlx::query_as::<_, LobbyRow>(
             r#"
             SELECT id, path, name, description, game_id, creator_id,
-                   entry_amount, current_amount, contract_address,
+                   entry_amount_micro, pot_micro,
                    is_private, is_sponsored, status, participants,
                    created_at, updated_at
             FROM lobbies
@@ -140,6 +136,29 @@ impl PgLobbyRepo {
         row.map(LobbyRow::into_lobby).transpose()
     }
 
+    pub async fn list_open(&self, limit: i64, offset: i64) -> AppResult<Vec<Lobby>> {
+        let rows = sqlx::query_as::<_, LobbyRow>(
+            r#"
+            SELECT id, path, name, description, game_id, creator_id,
+                   entry_amount_micro, pot_micro,
+                   is_private, is_sponsored, status, participants,
+                   created_at, updated_at
+            FROM lobbies
+            WHERE is_private = false
+              AND status IN ('waiting', 'starting', 'in_progress')
+            ORDER BY created_at DESC
+            LIMIT $1 OFFSET $2
+            "#,
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+
+        rows.into_iter().map(LobbyRow::into_lobby).collect()
+    }
+
     pub async fn path_exists(&self, path: &str) -> AppResult<bool> {
         let exists: bool = sqlx::query_scalar(
             r#"SELECT EXISTS(SELECT 1 FROM lobbies WHERE path = $1)"#,
@@ -149,6 +168,72 @@ impl PgLobbyRepo {
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
         Ok(exists)
+    }
+
+    pub async fn add_participant(
+        &self,
+        id: LobbyId,
+        user_id: UserId,
+        entry_micro: i64,
+    ) -> AppResult<()> {
+        sqlx::query(
+            r#"
+            UPDATE lobbies
+            SET participants = array_append(participants, $2),
+                pot_micro = pot_micro + $3,
+                updated_at = now()
+            WHERE id = $1
+              AND NOT ($2 = ANY(participants))
+            "#,
+        )
+        .bind(id.as_uuid())
+        .bind(user_id.as_uuid())
+        .bind(entry_micro)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+        Ok(())
+    }
+
+    pub async fn remove_participant(
+        &self,
+        id: LobbyId,
+        user_id: UserId,
+        entry_micro: i64,
+    ) -> AppResult<()> {
+        sqlx::query(
+            r#"
+            UPDATE lobbies
+            SET participants = array_remove(participants, $2),
+                pot_micro = GREATEST(pot_micro - $3, 0),
+                updated_at = now()
+            WHERE id = $1
+            "#,
+        )
+        .bind(id.as_uuid())
+        .bind(user_id.as_uuid())
+        .bind(entry_micro)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+        Ok(())
+    }
+
+    pub async fn set_status(&self, id: LobbyId, status: LobbyStatus) -> AppResult<()> {
+        let status = DbLobbyStatus::from(status);
+        sqlx::query(
+            r#"
+            UPDATE lobbies
+            SET status = $2, updated_at = now()
+            WHERE id = $1
+            "#,
+        )
+        .bind(id.as_uuid())
+        .bind(status)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+        Ok(())
     }
 }
 

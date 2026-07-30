@@ -7,10 +7,12 @@ use axum::routing::get;
 use axum::Router;
 use futures::{SinkExt, StreamExt};
 use tracing::{debug, info};
+use uuid::Uuid;
 
 use super::protocol::{ClientMessage, Envelope, ServerMessage, APP_TOPIC};
 use super::subscription::SubscribeError;
 use crate::state::AppState;
+use sw_domain::UserId;
 
 pub fn router() -> Router<AppState> {
     Router::new().route("/app", get(upgrade))
@@ -53,7 +55,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     while let Some(Ok(msg)) = stream.next().await {
         match msg {
             Message::Text(text) => {
-                handle_text(&state, connection_id, text.as_str());
+                handle_text(&state, connection_id, text.as_str()).await;
             }
             Message::Ping(_) => {
                 let _ = state.sessions.send(connection_id, ServerMessage::pong());
@@ -73,7 +75,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     );
 }
 
-fn handle_text(state: &AppState, connection_id: uuid::Uuid, text: &str) {
+async fn handle_text(state: &AppState, connection_id: Uuid, text: &str) {
     let envelope = match serde_json::from_str::<Envelope>(text) {
         Ok(envelope) => envelope,
         Err(err) => {
@@ -96,7 +98,31 @@ fn handle_text(state: &AppState, connection_id: uuid::Uuid, text: &str) {
     };
 
     match message {
+        ClientMessage::Auth { token } => match state.jwt.verify(&token).await {
+            Ok(claims) => {
+                let user_id = UserId::from(claims.user_id);
+                if !state.sessions.bind_user(connection_id, user_id) {
+                    return;
+                }
+                let _ = state
+                    .sessions
+                    .send(connection_id, ServerMessage::authenticated(claims.user_id));
+            }
+            Err(err) => {
+                let _ = state.sessions.send(
+                    connection_id,
+                    ServerMessage::error("unauthorized", err.to_string()),
+                );
+            }
+        },
         ClientMessage::Subscribe { topic } => {
+            if let Err(err) = authorize_subscribe(state, connection_id, &topic) {
+                let _ = state.sessions.send(
+                    connection_id,
+                    ServerMessage::error("unauthorized", err),
+                );
+                return;
+            }
             match state.subscriptions.subscribe(connection_id, &topic) {
                 Ok(()) => {
                     let _ = state
@@ -123,13 +149,64 @@ fn handle_text(state: &AppState, connection_id: uuid::Uuid, text: &str) {
         ClientMessage::Ping => {
             let _ = state.sessions.send(connection_id, ServerMessage::pong());
         }
+        ClientMessage::GameAction {
+            lobby_id,
+            game_id,
+            action,
+        } => {
+            let Some(user_id) = state.sessions.user_id(connection_id) else {
+                let _ = state.sessions.send(
+                    connection_id,
+                    ServerMessage::error("unauthorized", "authenticate before game.action"),
+                );
+                return;
+            };
+            let topic = format!("lobby:{lobby_id}");
+            state.subscriptions.publish(
+                &state.sessions,
+                &topic,
+                ServerMessage {
+                    kind: "lobby.event".into(),
+                    payload: serde_json::json!({
+                        "type": "game",
+                        "lobbyId": lobby_id,
+                        "gameId": game_id,
+                        "userId": user_id.as_uuid(),
+                        "event": action,
+                    }),
+                },
+            );
+        }
         ClientMessage::Unknown { kind } => {
             debug!(%connection_id, %kind, "ignoring unknown ws message kind");
         }
     }
 }
 
-fn cleanup(state: &AppState, connection_id: uuid::Uuid) {
+fn authorize_subscribe(
+    state: &AppState,
+    connection_id: Uuid,
+    topic: &str,
+) -> Result<(), &'static str> {
+    if topic == APP_TOPIC || topic.starts_with("lobby:") {
+        return Ok(());
+    }
+    if let Some(rest) = topic.strip_prefix("user:") {
+        let Some(bound) = state.sessions.user_id(connection_id) else {
+            return Err("authenticate before subscribing to user topics");
+        };
+        let Ok(wanted) = Uuid::parse_str(rest) else {
+            return Err("invalid user topic");
+        };
+        if bound.as_uuid() != wanted {
+            return Err("cannot subscribe to another user's topic");
+        }
+        return Ok(());
+    }
+    Ok(())
+}
+
+fn cleanup(state: &AppState, connection_id: Uuid) {
     state.subscriptions.unsubscribe_all(connection_id);
     state.sessions.remove(connection_id);
 }

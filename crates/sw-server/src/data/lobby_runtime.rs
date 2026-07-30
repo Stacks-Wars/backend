@@ -110,4 +110,19 @@ impl PlayerStateRepo {
         }
         Ok(players)
     }
+
+    pub async fn delete(&self, lobby_id: LobbyId, user_id: UserId) -> AppResult<()> {
+        let mut redis = self.redis.clone();
+        let key = player_key(lobby_id, user_id);
+        let set_key = players_set_key(lobby_id);
+        redis
+            .del::<_, ()>(key)
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?;
+        redis
+            .srem::<_, _, ()>(set_key, user_id.as_uuid().to_string())
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?;
+        Ok(())
+    }
 }

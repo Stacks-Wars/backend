@@ -7,6 +7,7 @@ use crate::error::{AppError, AppResult};
 
 #[derive(Debug, Clone)]
 pub struct UpsertUserInput {
+    pub id: UserId,
     pub email: String,
     pub display_name: Option<String>,
     pub avatar_url: Option<String>,
@@ -31,6 +32,17 @@ pub struct CustodialWalletPublic {
     pub network: String,
 }
 
+/// Includes ciphertext for server-action signing (internal secret only).
+#[derive(Debug, Clone)]
+pub struct CustodialWalletSecret {
+    pub user_id: Uuid,
+    pub stx_address: String,
+    pub public_key: String,
+    pub network: String,
+    pub encrypted_mnemonic: String,
+    pub kms_key_version: String,
+}
+
 #[derive(Debug, sqlx::FromRow)]
 struct UserRow {
     id: Uuid,
@@ -51,6 +63,16 @@ struct CustodialWalletRow {
     stx_address: String,
     public_key: String,
     network: String,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct CustodialWalletSecretRow {
+    user_id: Uuid,
+    stx_address: String,
+    public_key: String,
+    network: String,
+    encrypted_mnemonic: String,
+    kms_key_version: String,
 }
 
 impl From<UserRow> for User {
@@ -77,6 +99,19 @@ impl From<CustodialWalletRow> for CustodialWalletPublic {
             stx_address: row.stx_address,
             public_key: row.public_key,
             network: row.network,
+        }
+    }
+}
+
+impl From<CustodialWalletSecretRow> for CustodialWalletSecret {
+    fn from(row: CustodialWalletSecretRow) -> Self {
+        Self {
+            user_id: row.user_id,
+            stx_address: row.stx_address,
+            public_key: row.public_key,
+            network: row.network,
+            encrypted_mnemonic: row.encrypted_mnemonic,
+            kms_key_version: row.kms_key_version,
         }
     }
 }
@@ -109,11 +144,28 @@ impl PgUserRepo {
     }
 
     pub async fn upsert(&self, input: UpsertUserInput) -> AppResult<User> {
+        // Email must not belong to a different user id.
+        if let Some(existing) = sqlx::query_scalar::<_, Uuid>(
+            r#"SELECT id FROM users WHERE email = $1 AND id <> $2 LIMIT 1"#,
+        )
+        .bind(&input.email)
+        .bind(input.id.as_uuid())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|err| AppError::Internal(err.into()))?
+        {
+            let _ = existing;
+            return Err(AppError::Conflict(
+                "email already registered to another account".into(),
+            ));
+        }
+
         let row = sqlx::query_as::<_, UserRow>(
             r#"
-            INSERT INTO users (email, display_name, avatar_url, email_verified_at)
-            VALUES ($1, $2, $3, $4)
-            ON CONFLICT (email) DO UPDATE SET
+            INSERT INTO users (id, email, display_name, avatar_url, email_verified_at)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (id) DO UPDATE SET
+                email = EXCLUDED.email,
                 display_name = COALESCE(EXCLUDED.display_name, users.display_name),
                 avatar_url = COALESCE(EXCLUDED.avatar_url, users.avatar_url),
                 email_verified_at = COALESCE(EXCLUDED.email_verified_at, users.email_verified_at),
@@ -123,6 +175,7 @@ impl PgUserRepo {
                       created_at, updated_at
             "#,
         )
+        .bind(input.id.as_uuid())
         .bind(&input.email)
         .bind(&input.display_name)
         .bind(&input.avatar_url)
@@ -152,6 +205,27 @@ impl PgUserRepo {
         .map_err(|err| AppError::Internal(err.into()))?;
 
         Ok(row.map(CustodialWalletPublic::from))
+    }
+
+    pub async fn get_custodial_wallet_secret(
+        &self,
+        user_id: UserId,
+    ) -> AppResult<Option<CustodialWalletSecret>> {
+        let row = sqlx::query_as::<_, CustodialWalletSecretRow>(
+            r#"
+            SELECT user_id, stx_address, public_key, network,
+                   encrypted_mnemonic, kms_key_version
+            FROM custodial_wallets
+            WHERE user_id = $1 AND status = 'active'
+            LIMIT 1
+            "#,
+        )
+        .bind(user_id.as_uuid())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|err| AppError::Internal(err.into()))?;
+
+        Ok(row.map(CustodialWalletSecret::from))
     }
 
     pub async fn create_custodial_wallet(
