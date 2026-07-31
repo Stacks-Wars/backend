@@ -1,9 +1,15 @@
 [package]
 name = "sw-plugin"
-version.workspace = true
+version = "1.0.1"
 edition.workspace = true
-license.workspace = true
+license-file = "../../LICENSE"
+authors.workspace = true
+repository.workspace = true
 description = "Portable game plugin contract for Stacks Wars"
+readme = "README.md"
+keywords = ["stacks", "stacks-wars", "plugin", "game"]
+categories = ["game-development"]
+include = ["src/**/*", "Cargo.toml", "README.md", "../../LICENSE"]
 
 [dependencies]
 async-trait = { workspace = true }
@@ -11,6 +17,6 @@ chrono = { workspace = true }
 parking_lot = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-sw-domain = { workspace = true }
+sw-domain = "1.0.1"
 thiserror = { workspace = true }
 uuid = { workspace = true }
