@@ -11,15 +11,21 @@ members = [
 default-members = ["crates/sw-server"]
 
 [workspace.package]
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
-license = "MIT"
 authors = ["Stacks Wars"]
 repository = "https://github.com/stacks-wars/backend"
 
 [workspace.dependencies]
-sw-domain = { path = "crates/sw-domain" }
-sw-plugin = { path = "crates/sw-plugin" }
+sw-domain = "1.0.1"
+sw-plugin = "1.0.1"
+sw_checkers = "1.0.0"
+sw_lexi_wars = "1.0.0"
+sw_ludo = "1.0.0"
+sw_ludo_rush = "1.0.0"
+
+# [patch.crates-io]
+# sw-domain = { path = "crates/sw-domain" }
 
 anyhow = "1.0.104"
 async-trait = "0.1.91"

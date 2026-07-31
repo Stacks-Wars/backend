@@ -1,0 +1,36 @@
+# Local stack: Redis + sw-server (same pattern as chill-flow).
+# Redis is independent — start it alone with: docker compose up redis -d
+#
+#   docker compose up --build
+#   docker compose up redis -d   # Redis only
+services:
+    redis:
+        image: redis:7-alpine
+        command: redis-server --appendonly yes
+        ports:
+            - "6379:6379"
+        volumes:
+            - redis_data:/data
+        healthcheck:
+            test: ["CMD", "redis-cli", "ping"]
+            interval: 5s
+            timeout: 3s
+            retries: 10
+    sw-server:
+        build: .
+        ports:
+            - "8080:8080"
+        env_file:
+            - .env
+        environment:
+            # Compose network hostname — overrides localhost from .env
+            REDIS_URL: redis://redis:6379
+            HOST: 0.0.0.0
+            PORT: "8080"
+            MIGRATIONS_DIR: /app/migrations
+        depends_on:
+            redis:
+                condition: service_healthy
+        restart: unless-stopped
+volumes:
+    redis_data:
