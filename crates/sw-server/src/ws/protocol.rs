@@ -27,6 +27,18 @@ pub enum ClientMessage {
         game_id: String,
         action: Value,
     },
+    /// Voluntarily leave a match in progress.
+    GameQuit {
+        lobby_id: Uuid,
+    },
+    /// Re-request the full room snapshot (used after a reconnect).
+    LobbySync {
+        lobby_id: Uuid,
+    },
+    ChatSend {
+        lobby_id: Uuid,
+        body: String,
+    },
     /// Forward-compatible: ignore without error.
     Unknown { kind: String },
 }
@@ -80,11 +92,35 @@ impl ClientMessage {
                     action,
                 })
             }
+            "game.quit" => Ok(Self::GameQuit {
+                lobby_id: payload_lobby_id(&envelope.payload)?,
+            }),
+            "lobby.sync" => Ok(Self::LobbySync {
+                lobby_id: payload_lobby_id(&envelope.payload)?,
+            }),
+            "chat.send" => {
+                let lobby_id = payload_lobby_id(&envelope.payload)?;
+                let body = envelope
+                    .payload
+                    .get("body")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "payload.body must be a string".to_owned())?
+                    .to_owned();
+                Ok(Self::ChatSend { lobby_id, body })
+            }
             other => Ok(Self::Unknown {
                 kind: other.to_owned(),
             }),
         }
     }
+}
+
+fn payload_lobby_id(payload: &Value) -> Result<Uuid, String> {
+    payload
+        .get("lobbyId")
+        .and_then(|v| v.as_str())
+        .and_then(|s| Uuid::parse_str(s).ok())
+        .ok_or_else(|| "payload.lobbyId must be a uuid".to_owned())
 }
 
 fn payload_topic(payload: &Value) -> Result<String, String> {

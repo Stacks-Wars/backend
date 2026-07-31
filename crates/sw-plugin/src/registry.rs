@@ -31,12 +31,16 @@ impl GameRegistry {
         self.factories.read().get(game_id.as_str()).cloned()
     }
 
+    /// Sorted by name so clients render the catalogue in a stable order.
     pub fn list_metadata(&self) -> Vec<GameMetadata> {
-        self.factories
+        let mut games: Vec<GameMetadata> = self
+            .factories
             .read()
             .values()
             .map(|f| f.metadata())
-            .collect()
+            .collect();
+        games.sort_by(|a, b| a.name.cmp(&b.name));
+        games
     }
 
     pub fn contains(&self, game_id: &GameId) -> bool {

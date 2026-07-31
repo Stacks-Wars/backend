@@ -66,6 +66,18 @@ impl SessionManager {
             .and_then(|s| s.user_id)
     }
 
+    /// Authenticated user ids behind a set of connections, deduplicated.
+    pub fn distinct_user_ids(&self, connections: &[ConnectionId]) -> Vec<Uuid> {
+        let sessions = self.sessions.read();
+        let mut seen = std::collections::HashSet::new();
+        connections
+            .iter()
+            .filter_map(|id| sessions.get(id).and_then(|s| s.user_id))
+            .filter(|user_id| seen.insert(*user_id))
+            .map(|user_id| user_id.as_uuid())
+            .collect()
+    }
+
     pub fn remove(&self, connection_id: ConnectionId) -> bool {
         let removed = self.sessions.write().remove(&connection_id).is_some();
         if removed {

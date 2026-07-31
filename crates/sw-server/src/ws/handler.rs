@@ -11,8 +11,13 @@ use uuid::Uuid;
 
 use super::protocol::{ClientMessage, Envelope, ServerMessage, APP_TOPIC};
 use super::subscription::SubscribeError;
+use crate::data::chat::LobbyChatRepo;
+use crate::data::lobbies::PgLobbyRepo;
+use crate::data::users::PgUserRepo;
+use crate::engine::DispatchError;
+use crate::services::realtime;
 use crate::state::AppState;
-use sw_domain::UserId;
+use sw_domain::{sanitize_chat_body, LobbyChatMessage, LobbyId, UserId};
 
 pub fn router() -> Router<AppState> {
     Router::new().route("/app", get(upgrade))
@@ -116,6 +121,9 @@ async fn handle_text(state: &AppState, connection_id: Uuid, text: &str) {
             }
         },
         ClientMessage::Subscribe { topic } => {
+            let Some(topic) = resolve_topic(state, connection_id, topic).await else {
+                return;
+            };
             if let Err(err) = authorize_subscribe(state, connection_id, &topic) {
                 let _ = state.sessions.send(
                     connection_id,
@@ -127,7 +135,16 @@ async fn handle_text(state: &AppState, connection_id: Uuid, text: &str) {
                 Ok(()) => {
                     let _ = state
                         .sessions
-                        .send(connection_id, ServerMessage::subscribed(topic));
+                        .send(connection_id, ServerMessage::subscribed(topic.clone()));
+
+                    // A room subscription is the client's only fetch: hand back
+                    // the full snapshot, then tell the room someone arrived.
+                    if let Some(lobby_id) = realtime::parse_lobby_topic(&topic) {
+                        let viewer = state.sessions.user_id(connection_id);
+                        realtime::send_lobby_snapshot(state, connection_id, lobby_id, viewer)
+                            .await;
+                        realtime::publish_presence(state, lobby_id);
+                    }
                 }
                 Err(SubscribeError::TopicLimitReached) => {
                     let _ = state.sessions.send(
@@ -141,46 +158,164 @@ async fn handle_text(state: &AppState, connection_id: Uuid, text: &str) {
             }
         }
         ClientMessage::Unsubscribe { topic } => {
+            let Some(topic) = resolve_topic(state, connection_id, topic).await else {
+                return;
+            };
             state.subscriptions.unsubscribe(connection_id, &topic);
             let _ = state
                 .sessions
-                .send(connection_id, ServerMessage::unsubscribed(topic));
+                .send(connection_id, ServerMessage::unsubscribed(topic.clone()));
+            if let Some(lobby_id) = realtime::parse_lobby_topic(&topic) {
+                realtime::publish_presence(state, lobby_id);
+            }
         }
         ClientMessage::Ping => {
             let _ = state.sessions.send(connection_id, ServerMessage::pong());
+        }
+        ClientMessage::LobbySync { lobby_id } => {
+            let viewer = state.sessions.user_id(connection_id);
+            realtime::send_lobby_snapshot(state, connection_id, LobbyId::from(lobby_id), viewer)
+                .await;
         }
         ClientMessage::GameAction {
             lobby_id,
             game_id,
             action,
         } => {
-            let Some(user_id) = state.sessions.user_id(connection_id) else {
+            let Some(user_id) = require_auth(state, connection_id, "game.action") else {
+                return;
+            };
+            let lobby_id = LobbyId::from(lobby_id);
+
+            let Some(engine) = state.engines.get(lobby_id) else {
                 let _ = state.sessions.send(
                     connection_id,
-                    ServerMessage::error("unauthorized", "authenticate before game.action"),
+                    ServerMessage::error("no_engine", DispatchError::NotRunning.as_str()),
                 );
                 return;
             };
-            let topic = format!("lobby:{lobby_id}");
-            state.subscriptions.publish(
-                &state.sessions,
-                &topic,
-                ServerMessage {
-                    kind: "lobby.event".into(),
-                    payload: serde_json::json!({
-                        "type": "game",
-                        "lobbyId": lobby_id,
-                        "gameId": game_id,
-                        "userId": user_id.as_uuid(),
-                        "event": action,
-                    }),
-                },
-            );
+
+            if engine.game_id().as_str() != game_id {
+                let _ = state.sessions.send(
+                    connection_id,
+                    ServerMessage::error("game_mismatch", "gameId does not match this lobby"),
+                );
+                return;
+            }
+
+            if let Err(err) = engine.send_action(user_id, action) {
+                let _ = state
+                    .sessions
+                    .send(connection_id, ServerMessage::error("engine_busy", err.as_str()));
+            }
+        }
+        ClientMessage::GameQuit { lobby_id } => {
+            let Some(user_id) = require_auth(state, connection_id, "game.quit") else {
+                return;
+            };
+            if let Some(engine) = state.engines.get(LobbyId::from(lobby_id)) {
+                let _ = engine.send_quit(user_id);
+            }
+        }
+        ClientMessage::ChatSend { lobby_id, body } => {
+            let Some(user_id) = require_auth(state, connection_id, "chat.send") else {
+                return;
+            };
+            handle_chat(state, connection_id, LobbyId::from(lobby_id), user_id, body).await;
         }
         ClientMessage::Unknown { kind } => {
             debug!(%connection_id, %kind, "ignoring unknown ws message kind");
         }
     }
+}
+
+/// Expand the `lobbyPath:{path}` alias into the canonical `lobby:{uuid}` topic
+/// so a client holding only a share link can subscribe without an HTTP lookup.
+async fn resolve_topic(
+    state: &AppState,
+    connection_id: Uuid,
+    topic: String,
+) -> Option<String> {
+    let Some(path) = topic.strip_prefix("lobbyPath:") else {
+        return Some(topic);
+    };
+
+    match PgLobbyRepo::new(state.db.clone()).get_by_path(path).await {
+        Ok(Some(lobby)) => Some(realtime::lobby_topic(lobby.id)),
+        _ => {
+            let _ = state.sessions.send(
+                connection_id,
+                ServerMessage::error("not_found", format!("no lobby at /{path}")),
+            );
+            None
+        }
+    }
+}
+
+fn require_auth(state: &AppState, connection_id: Uuid, action: &str) -> Option<UserId> {
+    match state.sessions.user_id(connection_id) {
+        Some(user_id) => Some(user_id),
+        None => {
+            let _ = state.sessions.send(
+                connection_id,
+                ServerMessage::error(
+                    "unauthorized",
+                    format!("authenticate before {action}"),
+                ),
+            );
+            None
+        }
+    }
+}
+
+/// Only lobby participants may post; history is capped in Redis.
+async fn handle_chat(
+    state: &AppState,
+    connection_id: Uuid,
+    lobby_id: LobbyId,
+    user_id: UserId,
+    body: String,
+) {
+    let Some(body) = sanitize_chat_body(&body) else {
+        return;
+    };
+
+    let lobby = match PgLobbyRepo::new(state.db.clone()).get_by_id(lobby_id).await {
+        Ok(Some(lobby)) => lobby,
+        _ => {
+            let _ = state
+                .sessions
+                .send(connection_id, ServerMessage::error("not_found", "lobby not found"));
+            return;
+        }
+    };
+
+    if !lobby.participants.iter().any(|p| *p == user_id) {
+        let _ = state.sessions.send(
+            connection_id,
+            ServerMessage::error("forbidden", "join the lobby to chat"),
+        );
+        return;
+    }
+
+    let user = PgUserRepo::new(state.db.clone())
+        .get_by_id(user_id)
+        .await
+        .ok()
+        .flatten();
+
+    let message = LobbyChatMessage::new(
+        lobby_id,
+        user_id,
+        user.as_ref().and_then(|u| u.username.clone()),
+        user.as_ref().and_then(|u| u.display_name.clone()),
+        body,
+    );
+
+    if let Err(err) = LobbyChatRepo::new(state.redis.clone()).append(&message).await {
+        debug!(%lobby_id, error = %err, "failed to persist chat message");
+    }
+    realtime::publish_chat(state, &message);
 }
 
 fn authorize_subscribe(
@@ -207,6 +342,13 @@ fn authorize_subscribe(
 }
 
 fn cleanup(state: &AppState, connection_id: Uuid) {
+    let topics = state.subscriptions.topics_for(connection_id);
     state.subscriptions.unsubscribe_all(connection_id);
     state.sessions.remove(connection_id);
+
+    for topic in topics {
+        if let Some(lobby_id) = realtime::parse_lobby_topic(&topic) {
+            realtime::publish_presence(state, lobby_id);
+        }
+    }
 }

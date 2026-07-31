@@ -56,6 +56,15 @@ impl LobbyStateRepo {
             None => Ok(None),
         }
     }
+
+    pub async fn clear(&self, lobby_id: LobbyId) -> AppResult<()> {
+        let mut redis = self.redis.clone();
+        redis
+            .del::<_, ()>(lobby_state_key(lobby_id))
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?;
+        Ok(())
+    }
 }
 
 pub struct PlayerStateRepo {

@@ -14,6 +14,13 @@ pub struct UpsertUserInput {
     pub email_verified_at: Option<DateTime<Utc>>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct UpdateProfileInput {
+    pub username: Option<String>,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct CustodialWalletInput {
     pub stx_address: String,
@@ -21,6 +28,16 @@ pub struct CustodialWalletInput {
     pub encrypted_mnemonic: String,
     pub kms_key_version: String,
     pub network: String,
+}
+
+/// The subset of a profile that is safe to show to anyone.
+#[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct UserCard {
+    pub id: Uuid,
+    pub username: Option<String>,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
 }
 
 /// Public custodial wallet fields for transaction flows (no key material).
@@ -141,6 +158,93 @@ impl PgUserRepo {
         .map_err(|err| AppError::Internal(err.into()))?;
 
         Ok(row.map(User::from))
+    }
+
+    pub async fn get_by_username(&self, username: &str) -> AppResult<Option<User>> {
+        let row = sqlx::query_as::<_, UserRow>(
+            r#"
+            SELECT id, username, display_name, email, email_verified_at,
+                   wallet_address, wallet_verified_at, avatar_url,
+                   created_at, updated_at
+            FROM users
+            WHERE username = $1
+            "#,
+        )
+        .bind(username)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|err| AppError::Internal(err.into()))?;
+
+        Ok(row.map(User::from))
+    }
+
+    /// Partial profile update. `None` fields are left untouched.
+    pub async fn update_profile(&self, id: UserId, input: UpdateProfileInput) -> AppResult<User> {
+        if let Some(username) = input.username.as_deref() {
+            let taken: bool = sqlx::query_scalar(
+                r#"SELECT EXISTS(SELECT 1 FROM users WHERE username = $1 AND id <> $2)"#,
+            )
+            .bind(username)
+            .bind(id.as_uuid())
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|err| AppError::Internal(err.into()))?;
+            if taken {
+                return Err(AppError::Conflict("username already taken".into()));
+            }
+        }
+
+        let row = sqlx::query_as::<_, UserRow>(
+            r#"
+            UPDATE users SET
+                username = COALESCE($2, username),
+                display_name = COALESCE($3, display_name),
+                avatar_url = COALESCE($4, avatar_url),
+                updated_at = now()
+            WHERE id = $1
+            RETURNING id, username, display_name, email, email_verified_at,
+                      wallet_address, wallet_verified_at, avatar_url,
+                      created_at, updated_at
+            "#,
+        )
+        .bind(id.as_uuid())
+        .bind(&input.username)
+        .bind(&input.display_name)
+        .bind(&input.avatar_url)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|err| AppError::Internal(err.into()))?;
+
+        row.map(User::from).ok_or(AppError::NotFound("user"))
+    }
+
+    /// Resolve several users at once, for lists that show host and player names.
+    pub async fn cards(&self, ids: &[Uuid]) -> AppResult<Vec<UserCard>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        sqlx::query_as::<_, UserCard>(
+            r#"
+            SELECT id, username, display_name, avatar_url
+            FROM users
+            WHERE id = ANY($1)
+            "#,
+        )
+        .bind(ids)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|err| AppError::Internal(err.into()))
+    }
+
+    pub async fn username_available(&self, username: &str) -> AppResult<bool> {
+        let exists: bool =
+            sqlx::query_scalar(r#"SELECT EXISTS(SELECT 1 FROM users WHERE username = $1)"#)
+                .bind(username)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|err| AppError::Internal(err.into()))?;
+        Ok(!exists)
     }
 
     pub async fn upsert(&self, input: UpsertUserInput) -> AppResult<User> {

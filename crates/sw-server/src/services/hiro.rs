@@ -194,18 +194,41 @@ impl HiroClient {
                     if full == vault_id || cid.trim_end_matches('.') == vault_id {
                         let fn_name = cc.function_name.as_deref().unwrap_or("");
                         let path = extract_lobby_path_arg(cc.function_args.as_ref());
+                        if fn_name == "claim" {
+                            // One claim tx can pay winner + platform + game fee.
+                            // Address endpoints often only include FT legs for
+                            // *this* principal — compare against claim `amount`.
+                            for (kind, amount_micro) in claim_activity_for_address(
+                                &item.ft_transfers,
+                                address,
+                                &self.usdcx_asset,
+                                self.platform_wallet(),
+                                extract_claim_pot_arg(cc.function_args.as_ref()),
+                            ) {
+                                out.push(ChainActivityItem {
+                                    txid: txid.clone(),
+                                    kind,
+                                    amount_micro,
+                                    from_address: Some(address.to_owned()),
+                                    to_address: Some(vault_id.to_owned()),
+                                    lobby_path: path.clone(),
+                                    status: status.clone(),
+                                    block_time,
+                                });
+                            }
+                            continue;
+                        }
+                        let kind = match fn_name {
+                            "join" => ChainActivityKind::VaultJoin,
+                            "leave" => ChainActivityKind::VaultLeave,
+                            "kick" => ChainActivityKind::VaultKick,
+                            _ => ChainActivityKind::Other,
+                        };
                         let amount = ft_amount_involving(
                             &item.ft_transfers,
                             address,
                             &self.usdcx_asset,
                         );
-                        let kind = match fn_name {
-                            "join" => ChainActivityKind::VaultJoin,
-                            "leave" => ChainActivityKind::VaultLeave,
-                            "kick" => ChainActivityKind::VaultKick,
-                            "claim" => ChainActivityKind::VaultClaim,
-                            _ => ChainActivityKind::Other,
-                        };
                         out.push(ChainActivityItem {
                             txid: txid.clone(),
                             kind,
@@ -273,6 +296,11 @@ impl HiroClient {
     pub fn vault_contract(&self) -> Option<&str> {
         self.vault_contract.as_deref()
     }
+
+    /// Deployer principal of `SW_VAULT_CONTRACT` — same as on-chain `PLATFORM-WALLET`.
+    fn platform_wallet(&self) -> Option<&str> {
+        self.vault_contract.as_deref()?.split('.').next()
+    }
 }
 
 pub fn is_confirmed_status(status: &str) -> bool {
@@ -308,6 +336,101 @@ fn ft_amount_involving(
                 .sum()
         })
         .unwrap_or(0)
+}
+
+/// Claim pays winner + platform (2%) + optional game fee in one tx (up to 3 FT outs).
+///
+/// Drop the platform leg, then for this address:
+/// - two inbounds (winner == dev) → larger = winnings, smaller = game fee
+/// - one inbound → use claim pot when available (Hiro address feeds often omit
+///   other recipients, so a lone fee leg looks like the "max" and was mislabeled
+///   Winnings). Winner share is always > half the pot; game fee ≤ 5%.
+fn claim_activity_for_address(
+    transfers: &Option<Vec<FtTransfer>>,
+    address: &str,
+    asset: &str,
+    platform_wallet: Option<&str>,
+    claim_pot_micro: Option<i64>,
+) -> Vec<(ChainActivityKind, i64)> {
+    let Some(transfers) = transfers.as_ref() else {
+        return Vec::new();
+    };
+
+    let mut to_me: Vec<i64> = Vec::new();
+    let mut non_platform_max: i64 = 0;
+
+    for ft in transfers {
+        if ft.asset_identifier.as_deref() != Some(asset) {
+            continue;
+        }
+        let amount: i64 = ft
+            .amount
+            .as_deref()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        if amount <= 0 {
+            continue;
+        }
+        let Some(recipient) = ft.recipient.as_deref() else {
+            continue;
+        };
+        if platform_wallet.is_some_and(|p| p == recipient) {
+            continue;
+        }
+        non_platform_max = non_platform_max.max(amount);
+        if recipient == address {
+            to_me.push(amount);
+        }
+    }
+
+    if to_me.is_empty() {
+        return Vec::new();
+    }
+
+    if to_me.len() >= 2 {
+        to_me.sort_unstable_by(|a, b| b.cmp(a));
+        let winning = to_me[0];
+        let game_fee: i64 = to_me[1..].iter().sum();
+        let mut out = vec![(ChainActivityKind::VaultClaim, winning)];
+        if game_fee > 0 {
+            out.push((ChainActivityKind::VaultDevFee, game_fee));
+        }
+        return out;
+    }
+
+    let my = to_me[0];
+    // Prefer pot from claim args — reliable when only this address's FT leg is present.
+    if let Some(pot) = claim_pot_micro.filter(|p| *p > 0) {
+        let kind = if my * 2 < pot {
+            ChainActivityKind::VaultDevFee
+        } else {
+            ChainActivityKind::VaultClaim
+        };
+        return vec![(kind, my)];
+    }
+    if my >= non_platform_max {
+        vec![(ChainActivityKind::VaultClaim, my)]
+    } else {
+        vec![(ChainActivityKind::VaultDevFee, my)]
+    }
+}
+
+/// `claim` args: path, amount, nonce, dev-wallet, dev-fee, signature.
+/// First uint is the signed pot amount.
+fn extract_claim_pot_arg(args: Option<&Vec<FunctionArg>>) -> Option<i64> {
+    let args = args?;
+    for a in args {
+        if a.name.as_deref() == Some("amount") {
+            return uint_from_repr(a.repr.as_deref());
+        }
+    }
+    args.iter().find_map(|a| uint_from_repr(a.repr.as_deref()))
+}
+
+fn uint_from_repr(repr: Option<&str>) -> Option<i64> {
+    let repr = repr?.trim();
+    let s = repr.strip_prefix('u')?;
+    s.parse().ok()
 }
 
 /// Best-effort: lobby path from Clarity function args (Hiro `repr`).

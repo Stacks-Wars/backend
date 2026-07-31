@@ -49,6 +49,30 @@ impl LeaderboardRow {
     }
 }
 
+/// One (season, game) row of a user's competitive record.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserStatLine {
+    pub season_id: i32,
+    pub season_name: String,
+    pub game_id: String,
+    pub points: i64,
+    pub total_matches: i32,
+    pub total_wins: i32,
+    pub total_pnl: i64,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct UserStatLineRow {
+    season_id: i32,
+    season_name: String,
+    game_id: String,
+    points: i64,
+    total_matches: i32,
+    total_wins: i32,
+    total_pnl: i64,
+}
+
 pub struct PgStatsRepo {
     pool: PgPool,
 }
@@ -90,6 +114,65 @@ impl PgStatsRepo {
         .map_err(|err| AppError::Internal(err.into()))?;
 
         Ok(())
+    }
+
+    /// Per (season, game) stat lines for a profile, newest season first.
+    pub async fn user_stat_lines(&self, user_id: UserId) -> AppResult<Vec<UserStatLine>> {
+        let rows = sqlx::query_as::<_, UserStatLineRow>(
+            r#"
+            SELECT s.season_id, se.name AS season_name, s.game_id,
+                   s.points, s.total_matches, s.total_wins, s.total_pnl
+            FROM user_game_stats s
+            JOIN seasons se ON se.id = s.season_id
+            WHERE s.user_id = $1
+            ORDER BY s.season_id DESC, s.points DESC
+            "#,
+        )
+        .bind(user_id.as_uuid())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|err| AppError::Internal(err.into()))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| UserStatLine {
+                season_id: r.season_id,
+                season_name: r.season_name,
+                game_id: r.game_id,
+                points: r.points,
+                total_matches: r.total_matches,
+                total_wins: r.total_wins,
+                total_pnl: r.total_pnl,
+            })
+            .collect())
+    }
+
+    /// 1-based overall rank for a user in a season, if they have any stats.
+    pub async fn user_season_rank(
+        &self,
+        user_id: UserId,
+        season_id: SeasonId,
+    ) -> AppResult<Option<i64>> {
+        let rank: Option<i64> = sqlx::query_scalar(
+            r#"
+            WITH totals AS (
+                SELECT user_id, SUM(points) AS points
+                FROM user_game_stats
+                WHERE season_id = $1
+                GROUP BY user_id
+            ), ranked AS (
+                SELECT user_id, RANK() OVER (ORDER BY points DESC) AS rank
+                FROM totals
+            )
+            SELECT rank FROM ranked WHERE user_id = $2
+            "#,
+        )
+        .bind(season_id.as_i32())
+        .bind(user_id.as_uuid())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|err| AppError::Internal(err.into()))?;
+        Ok(rank)
     }
 
     pub async fn leaderboard_overall(

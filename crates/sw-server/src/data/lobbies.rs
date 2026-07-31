@@ -45,6 +45,56 @@ impl LobbyRow {
     }
 }
 
+/// Filters for the lobby browser. `None` means "any".
+#[derive(Debug, Clone)]
+pub struct LobbyQuery {
+    pub game_id: Option<GameId>,
+    pub statuses: Option<Vec<LobbyStatus>>,
+    pub creator_id: Option<UserId>,
+    /// `Some(true)` paid only, `Some(false)` free only.
+    pub paid: Option<bool>,
+    pub min_players: Option<i32>,
+    pub max_players: Option<i32>,
+    pub is_private: Option<bool>,
+    pub limit: i64,
+    pub offset: i64,
+}
+
+impl Default for LobbyQuery {
+    fn default() -> Self {
+        Self {
+            game_id: None,
+            statuses: None,
+            creator_id: None,
+            paid: None,
+            min_players: None,
+            max_players: None,
+            is_private: None,
+            limit: 60,
+            offset: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GameActivity {
+    pub game_id: String,
+    pub waiting_lobbies: i64,
+    pub live_lobbies: i64,
+    pub active_players: i64,
+    pub open_pot_micro: i64,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct GameActivityRow {
+    game_id: String,
+    waiting_lobbies: i64,
+    live_lobbies: i64,
+    active_players: i64,
+    open_pot_micro: i64,
+}
+
 pub struct PgLobbyRepo {
     pool: PgPool,
 }
@@ -144,14 +194,121 @@ impl PgLobbyRepo {
                    is_private, is_sponsored, status, participants,
                    created_at, updated_at
             FROM lobbies
-            WHERE is_private = false
-              AND status IN ('waiting', 'starting', 'in_progress')
+            WHERE status IN ('waiting', 'starting', 'in_progress')
             ORDER BY created_at DESC
             LIMIT $1 OFFSET $2
             "#,
         )
         .bind(limit)
         .bind(offset)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+
+        rows.into_iter().map(LobbyRow::into_lobby).collect()
+    }
+
+    /// Browser query. `None` filters are ignored.
+    pub async fn browse(&self, query: &LobbyQuery) -> AppResult<Vec<Lobby>> {
+        let statuses: Option<Vec<String>> = query
+            .statuses
+            .as_ref()
+            .map(|list| list.iter().map(|s| s.as_db_str().to_owned()).collect());
+
+        let rows = sqlx::query_as::<_, LobbyRow>(
+            r#"
+            SELECT id, path, name, description, game_id, creator_id,
+                   entry_amount_micro, pot_micro,
+                   is_private, is_sponsored, status, participants,
+                   created_at, updated_at
+            FROM lobbies
+            WHERE ($1::BOOLEAN IS NULL OR is_private = $1)
+              AND ($2::TEXT IS NULL OR game_id = $2)
+              AND ($3::TEXT[] IS NULL OR status::TEXT = ANY($3))
+              AND ($4::UUID IS NULL OR creator_id = $4)
+              AND ($5::BOOLEAN IS NULL
+                   OR ($5 = TRUE AND entry_amount_micro > 0)
+                   OR ($5 = FALSE AND entry_amount_micro = 0))
+              AND ($6::INT IS NULL OR cardinality(participants) >= $6)
+              AND ($7::INT IS NULL OR cardinality(participants) <= $7)
+            ORDER BY
+                CASE status
+                    WHEN 'waiting' THEN 0
+                    WHEN 'starting' THEN 1
+                    WHEN 'in_progress' THEN 2
+                    ELSE 3
+                END,
+                created_at DESC
+            LIMIT $8 OFFSET $9
+            "#,
+        )
+        .bind(query.is_private)
+        .bind(query.game_id.as_ref().map(GameId::as_str))
+        .bind(statuses)
+        .bind(query.creator_id.map(|c| c.as_uuid()))
+        .bind(query.paid)
+        .bind(query.min_players)
+        .bind(query.max_players)
+        .bind(query.limit)
+        .bind(query.offset)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+
+        rows.into_iter().map(LobbyRow::into_lobby).collect()
+    }
+
+    /// Live lobby / player counts per game, for the games directory.
+    pub async fn game_activity(&self) -> AppResult<Vec<GameActivity>> {
+        let rows = sqlx::query_as::<_, GameActivityRow>(
+            r#"
+            SELECT game_id,
+                   COUNT(*) FILTER (WHERE status = 'waiting') AS waiting_lobbies,
+                   COUNT(*) FILTER (WHERE status IN ('starting', 'in_progress'))
+                       AS live_lobbies,
+                   COALESCE(SUM(cardinality(participants)), 0)::bigint AS active_players,
+                   COALESCE(SUM(pot_micro), 0)::bigint AS open_pot_micro
+            FROM lobbies
+            WHERE status IN ('waiting', 'starting', 'in_progress')
+            GROUP BY game_id
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| GameActivity {
+                game_id: r.game_id,
+                waiting_lobbies: r.waiting_lobbies,
+                live_lobbies: r.live_lobbies,
+                active_players: r.active_players,
+                open_pot_micro: r.open_pot_micro,
+            })
+            .collect())
+    }
+
+    /// Lobbies a user has taken part in, newest first.
+    pub async fn list_for_participant(
+        &self,
+        user_id: UserId,
+        limit: i64,
+    ) -> AppResult<Vec<Lobby>> {
+        let rows = sqlx::query_as::<_, LobbyRow>(
+            r#"
+            SELECT id, path, name, description, game_id, creator_id,
+                   entry_amount_micro, pot_micro,
+                   is_private, is_sponsored, status, participants,
+                   created_at, updated_at
+            FROM lobbies
+            WHERE $1 = ANY(participants)
+            ORDER BY created_at DESC
+            LIMIT $2
+            "#,
+        )
+        .bind(user_id.as_uuid())
+        .bind(limit)
         .fetch_all(&self.pool)
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
@@ -233,6 +390,41 @@ impl PgLobbyRepo {
         .execute(&self.pool)
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
+        Ok(())
+    }
+
+    /// Waiting lobbies created before `cutoff` (used by the 24h TTL janitor).
+    pub async fn list_waiting_older_than(
+        &self,
+        cutoff: DateTime<Utc>,
+    ) -> AppResult<Vec<Lobby>> {
+        let rows = sqlx::query_as::<_, LobbyRow>(
+            r#"
+            SELECT id, path, name, description, game_id, creator_id,
+                   entry_amount_micro, pot_micro,
+                   is_private, is_sponsored, status, participants,
+                   created_at, updated_at
+            FROM lobbies
+            WHERE status = 'waiting'
+              AND created_at < $1
+            ORDER BY created_at ASC
+            LIMIT 100
+            "#,
+        )
+        .bind(cutoff)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+
+        rows.into_iter().map(LobbyRow::into_lobby).collect()
+    }
+
+    pub async fn delete(&self, id: LobbyId) -> AppResult<()> {
+        sqlx::query(r#"DELETE FROM lobbies WHERE id = $1"#)
+            .bind(id.as_uuid())
+            .execute(&self.pool)
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?;
         Ok(())
     }
 }

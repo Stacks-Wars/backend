@@ -130,7 +130,8 @@ impl PlayerState {
             joined_at: now,
             updated_at: now,
             is_creator: true,
-            ready: false,
+            // Host is ready by default; they start the match when the lobby is full.
+            ready: true,
         }
     }
 
@@ -153,7 +154,8 @@ impl PlayerState {
             joined_at: now,
             updated_at: now,
             is_creator: false,
-            ready: false,
+            // Joining a lobby means you're ready to play.
+            ready: true,
         }
     }
 }

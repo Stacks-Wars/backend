@@ -9,6 +9,9 @@ use crate::error::{AppError, AppResult};
 use crate::services::neon_jwt::bearer_token_from_header;
 use crate::state::AppState;
 
+/// Cron / Next janitor auth via `x-internal-secret`.
+pub struct InternalSecret;
+
 #[derive(Debug, Clone)]
 pub struct AuthUser {
     pub user_id: UserId,
@@ -59,5 +62,29 @@ impl FromRequestParts<AppState> for AuthUser {
             email: claims.email,
             email_verified: claims.email_verified,
         })
+    }
+}
+
+impl FromRequestParts<AppState> for InternalSecret {
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let expected = state
+            .config
+            .internal_api_secret
+            .as_deref()
+            .ok_or(AppError::Unauthorized("internal API not configured"))?;
+        let provided = parts
+            .headers
+            .get("x-internal-secret")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if provided.is_empty() || provided != expected {
+            return Err(AppError::Unauthorized("invalid internal secret"));
+        }
+        Ok(InternalSecret)
     }
 }

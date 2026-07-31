@@ -40,6 +40,24 @@ async fn main() -> anyhow::Result<()> {
     info!(registered = game_registry.len(), "game plugins registered");
 
     let state = AppState::new(config.clone(), db, redis, Arc::new(game_registry));
+
+    // Free waiting lobbies older than 24h can be purged without on-chain work.
+    // Paid stale lobbies are refunded + expired by the Next cron (/api/cron/lobby-ttl).
+    {
+        let janitor = state.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(15 * 60));
+            loop {
+                ticker.tick().await;
+                match sw_server::services::lobby_ttl::expire_free_stale_lobbies(&janitor).await {
+                    Ok(0) => {}
+                    Ok(n) => tracing::info!(expired = n, "expired free stale lobbies"),
+                    Err(err) => tracing::warn!(error = %err, "free lobby TTL janitor failed"),
+                }
+            }
+        });
+    }
+
     let app = routes::router(state);
 
     let addr = SocketAddr::from((config.host, config.port));

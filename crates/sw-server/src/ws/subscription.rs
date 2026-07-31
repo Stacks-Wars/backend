@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use parking_lot::RwLock;
+use sw_domain::UserId;
 use tracing::debug;
 
 use super::protocol::{ServerMessage, MAX_TOPICS_PER_CONNECTION};
@@ -126,6 +127,46 @@ impl SubscriptionManager {
         for connection_id in recipients {
             let _ = sessions.send(connection_id, message.clone());
         }
+    }
+
+    /// Publish to every subscriber of `topic` except connections bound to `except`.
+    pub fn publish_except(
+        &self,
+        sessions: &SessionManager,
+        topic: &str,
+        except: UserId,
+        message: ServerMessage,
+    ) {
+        let recipients: Vec<ConnectionId> = self
+            .by_topic
+            .read()
+            .get(topic)
+            .map(|set| set.iter().copied().collect())
+            .unwrap_or_default();
+
+        for connection_id in recipients {
+            if sessions.user_id(connection_id) == Some(except) {
+                continue;
+            }
+            let _ = sessions.send(connection_id, message.clone());
+        }
+    }
+
+    pub fn members(&self, topic: &str) -> Vec<ConnectionId> {
+        self.by_topic
+            .read()
+            .get(topic)
+            .map(|set| set.iter().copied().collect())
+            .unwrap_or_default()
+    }
+
+    /// Topics a connection is subscribed to.
+    pub fn topics_for(&self, connection_id: ConnectionId) -> Vec<String> {
+        self.by_connection
+            .read()
+            .get(&connection_id)
+            .map(|set| set.iter().cloned().collect())
+            .unwrap_or_default()
     }
 
     pub fn topic_count(&self) -> usize {
