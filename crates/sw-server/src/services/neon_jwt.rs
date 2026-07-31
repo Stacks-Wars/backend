@@ -229,12 +229,12 @@ impl NeonJwtVerifier {
     }
 }
 
-/// Neon Auth `sub` must be UUID version 7.
+/// Neon Auth `sub` is the primary key of `users`.
 pub fn parse_neon_sub(sub: &str) -> AppResult<Uuid> {
     let id = Uuid::parse_str(sub.trim())
         .map_err(|_| AppError::Unauthorized("token sub is not a uuid"))?;
-    if id.get_version_num() != 7 {
-        return Err(AppError::Unauthorized("token sub must be uuid v7"));
+    if id.is_nil() {
+        return Err(AppError::Unauthorized("token sub is not a uuid"));
     }
     Ok(id)
 }

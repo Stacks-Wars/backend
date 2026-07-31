@@ -27,6 +27,7 @@ pub enum ChainActivityKind {
     VaultLeave,
     VaultKick,
     VaultClaim,
+    VaultDevFee,
     Other,
 }
 

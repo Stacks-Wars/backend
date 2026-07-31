@@ -8,4 +8,4 @@ mod subscription;
 pub use handler::router;
 pub use protocol::{ClientMessage, ServerMessage, APP_TOPIC};
 pub use session::{ConnectionId, SessionManager};
-pub use subscription::SubscriptionManager;
+pub use subscription::{SubscribeError, SubscriptionManager};

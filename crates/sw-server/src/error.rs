@@ -24,6 +24,10 @@ pub enum AppError {
     #[error("conflict: {0}")]
     Conflict(String),
 
+    /// Lobby capacity reached (including concurrent seat holds).
+    #[error("lobby is full")]
+    LobbyFull,
+
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }
@@ -49,6 +53,7 @@ impl AppError {
                 (StatusCode::PAYMENT_REQUIRED, "insufficient_balance")
             }
             Self::Conflict(_) => (StatusCode::CONFLICT, "conflict"),
+            Self::LobbyFull => (StatusCode::CONFLICT, "lobby_full"),
             Self::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
         }
     }

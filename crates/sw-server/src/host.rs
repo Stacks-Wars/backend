@@ -7,21 +7,21 @@ use parking_lot::Mutex;
 use redis::aio::ConnectionManager;
 use serde_json::Value;
 use sqlx::PgPool;
-use sw_domain::{GameId, LobbyId, LobbyStatus, UserId};
+use sw_domain::{usdcx_to_micro, GameId, LobbyId, LobbyStatus, MatchId, UserId};
 use sw_plugin::{
     calculate_wars_point, GameHost, MatchResult, PlayerResult, PlayerStateWire, PluginError,
     PluginResult, WarsPointContext,
 };
-use tracing::{error, info};
-use uuid::Uuid;
+use tracing::{error, info, warn};
 
 use crate::data::lobbies::PgLobbyRepo;
 use crate::data::lobby_runtime::{LobbyStateRepo, PlayerStateRepo};
+use crate::data::matches::{MatchPlayerRecord, MatchRecord, PgMatchRepo};
 use crate::data::seasons::{PgSeasonRepo, SeasonRepo};
 use crate::data::stats::{PgStatsRepo, RecordResultInput};
 use crate::data::users::PgUserRepo;
 use crate::services::vault_oracle::{build_claim_intent, split_pot};
-use crate::ws::{SessionManager, SubscriptionManager};
+use crate::ws::{SessionManager, SubscriptionManager, APP_TOPIC};
 
 #[derive(Debug)]
 pub struct ServerGameHost {
@@ -32,7 +32,12 @@ pub struct ServerGameHost {
     pub entry_amount_micro: i64,
     pub pot_micro: i64,
     pub creator_id: UserId,
+    /// Game plugin `dev_id` — receives the game-fee leg when a custodial wallet exists.
+    pub dev_id: UserId,
     pub fee_percentage: u8,
+    /// Clarity `PLATFORM-WALLET` principal (vault deployer). Used as claim
+    /// `dev-wallet` placeholder when the game fee is forced to 0.
+    pub platform_wallet: String,
     pub redis: ConnectionManager,
     pub subscriptions: Arc<SubscriptionManager>,
     pub sessions: Arc<SessionManager>,
@@ -49,7 +54,9 @@ impl ServerGameHost {
         entry_amount_micro: i64,
         pot_micro: i64,
         creator_id: UserId,
+        dev_id: UserId,
         fee_percentage: u8,
+        platform_wallet: String,
         redis: ConnectionManager,
         subscriptions: Arc<SubscriptionManager>,
         sessions: Arc<SessionManager>,
@@ -62,7 +69,9 @@ impl ServerGameHost {
             entry_amount_micro,
             pot_micro,
             creator_id,
+            dev_id,
             fee_percentage,
+            platform_wallet,
             redis,
             subscriptions,
             sessions,
@@ -79,7 +88,9 @@ impl ServerGameHost {
         entry_amount_micro: i64,
         pot_micro: i64,
         creator_id: UserId,
+        dev_id: UserId,
         fee_percentage: u8,
+        platform_wallet: String,
         redis: ConnectionManager,
         subscriptions: Arc<SubscriptionManager>,
         sessions: Arc<SessionManager>,
@@ -92,7 +103,9 @@ impl ServerGameHost {
             entry_amount_micro,
             pot_micro,
             creator_id,
+            dev_id,
             fee_percentage,
+            platform_wallet,
             redis,
             subscriptions,
             sessions,
@@ -108,6 +121,66 @@ impl ServerGameHost {
             .map(|w| w.stx_address)
     }
 
+    /// Persist the finished match so profiles can show history. Best effort:
+    /// a failure here must not block settlement.
+    async fn record_match_history(&self, match_id: MatchId, result: &MatchResult) {
+        let players = self.get_player_states().await.unwrap_or_default();
+        if players.is_empty() {
+            return;
+        }
+
+        let season_id = PgSeasonRepo::new(self.db.clone())
+            .current()
+            .await
+            .ok()
+            .flatten()
+            .map(|s| s.id);
+
+        let started_at = LobbyStateRepo::new(self.redis.clone())
+            .get(self.lobby_id)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|s| s.started_at)
+            .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0));
+
+        let entry_micro = self.entry_amount_micro;
+        let rows = players
+            .iter()
+            .map(|p| {
+                let user_id = UserId::from(p.user_id);
+                MatchPlayerRecord {
+                    user_id,
+                    rank: p.rank.map(|r| r as i32),
+                    is_winner: result.winners.contains(&user_id),
+                    prize_micro: p.prize_micro.unwrap_or(0),
+                    entry_micro,
+                    wars_point: p.wars_point.unwrap_or(0),
+                }
+            })
+            .collect();
+
+        let record = MatchRecord {
+            match_id,
+            lobby_id: self.lobby_id,
+            lobby_path: self.lobby_path.clone(),
+            game_id: self.game_id.as_str().to_owned(),
+            season_id,
+            pot_micro: self.pot_micro,
+            entry_amount_micro: entry_micro,
+            started_at,
+            players: rows,
+        };
+
+        if let Err(err) = PgMatchRepo::new(self.db.clone()).record(&record).await {
+            error!(
+                lobby_id = %self.lobby_id,
+                error = %err,
+                "failed to persist match history"
+            );
+        }
+    }
+
     async fn settle(&self, result: &MatchResult) -> PluginResult<()> {
         {
             let mut guard = self.settled.lock();
@@ -117,10 +190,8 @@ impl ServerGameHost {
             *guard = true;
         }
 
-        let match_id = Uuid::now_v7().to_string();
+        let match_id = MatchId::new();
         let pot = self.pot_micro;
-        let (platform_fee_amount, dev_fee_amount, _) =
-            split_pot(pot, self.fee_percentage);
 
         let winner = result
             .winners
@@ -132,11 +203,28 @@ impl ServerGameHost {
             Some(w) => self.custodial_address(w).await,
             None => None,
         };
-        let dev_principal = self.custodial_address(self.creator_id).await;
 
-        let intent = match (winner, winner_principal, dev_principal) {
-            (Some(w), Some(wp), Some(dp)) if pot > 0 => {
-                build_claim_intent(pot, self.fee_percentage, w, wp, dp)
+        // Resolve game-fee recipient from plugin `dev_id`. Missing user / no
+        // custodial wallet → still allow claim: platform principal + fee 0
+        // (Clarity ignores the wallet when fee is 0).
+        let (dev_wallet, game_fee_pct) =
+            match self.custodial_address(self.dev_id).await {
+                Some(addr) => (addr, self.fee_percentage),
+                None => {
+                    warn!(
+                        lobby_id = %self.lobby_id,
+                        dev_id = %self.dev_id,
+                        "dev custodial wallet missing; claiming with platform wallet and 0% game fee"
+                    );
+                    (self.platform_wallet.clone(), 0u8)
+                }
+            };
+
+        let (platform_fee_amount, dev_fee_amount, _) = split_pot(pot, game_fee_pct);
+
+        let intent = match (winner, winner_principal) {
+            (Some(w), Some(wp)) if pot > 0 => {
+                build_claim_intent(pot, game_fee_pct, w, wp, dev_wallet)
             }
             _ => None,
         };
@@ -154,6 +242,8 @@ impl ServerGameHost {
             let _ = LobbyStateRepo::new(self.redis.clone()).set(&st).await;
         }
 
+        self.record_match_history(match_id, result).await;
+
         let topic = format!("lobby:{}", self.lobby_id);
         let claims = match &intent {
             Some(c) => vec![serde_json::json!({
@@ -167,18 +257,69 @@ impl ServerGameHost {
             })],
             None => Vec::new(),
         };
+        let finished_payload = serde_json::json!({
+            "lobbyId": self.lobby_id,
+            "lobbyPath": self.lobby_path,
+            "matchId": match_id,
+            "winners": result.winners,
+            "needsOnChainClaim": intent.is_some(),
+            "claims": claims,
+        });
+        if let Err(err) = crate::data::lobby_finished::LobbyFinishedRepo::new(
+            self.redis.clone(),
+        )
+        .set(self.lobby_id, &finished_payload)
+        .await
+        {
+            error!(
+                lobby_id = %self.lobby_id,
+                error = %err,
+                "failed to persist lobby.finished payload"
+            );
+        }
         let msg = crate::ws::ServerMessage {
             kind: "lobby.finished".into(),
-            payload: serde_json::json!({
-                "lobbyId": self.lobby_id,
-                "lobbyPath": self.lobby_path,
-                "matchId": match_id,
-                "winners": result.winners,
-                "needsOnChainClaim": intent.is_some(),
-                "claims": claims,
-            }),
+            payload: finished_payload,
         };
         self.subscriptions.publish(&self.sessions, &topic, msg);
+
+        // Global feed: drop the lobby from the browser, refresh leaderboards,
+        // and give the landing page a result to show.
+        self.subscriptions.publish(
+            &self.sessions,
+            APP_TOPIC,
+            crate::ws::ServerMessage {
+                kind: "lobby.removed".into(),
+                payload: serde_json::json!({
+                    "lobbyId": self.lobby_id,
+                    "path": self.lobby_path,
+                    "gameId": self.game_id,
+                }),
+            },
+        );
+        self.subscriptions.publish(
+            &self.sessions,
+            APP_TOPIC,
+            crate::ws::ServerMessage {
+                kind: "match.finished".into(),
+                payload: serde_json::json!({
+                    "matchId": match_id,
+                    "lobbyId": self.lobby_id,
+                    "lobbyPath": self.lobby_path,
+                    "gameId": self.game_id,
+                    "potMicro": pot,
+                    "winners": result.winners,
+                }),
+            },
+        );
+        self.subscriptions.publish(
+            &self.sessions,
+            APP_TOPIC,
+            crate::ws::ServerMessage {
+                kind: "leaderboard.updated".into(),
+                payload: serde_json::json!({ "gameId": self.game_id }),
+            },
+        );
 
         info!(
             lobby_id = %self.lobby_id,
@@ -195,6 +336,8 @@ impl ServerGameHost {
 
 #[async_trait]
 impl GameHost for ServerGameHost {
+    /// Engine events are wrapped with routing metadata so a client watching
+    /// several topics can dispatch them to the right game component.
     async fn broadcast(&self, payload: Value) -> PluginResult<()> {
         let topic = format!("lobby:{}", self.lobby_id);
         self.subscriptions.publish(
@@ -202,7 +345,11 @@ impl GameHost for ServerGameHost {
             &topic,
             crate::ws::ServerMessage {
                 kind: "lobby.event".into(),
-                payload,
+                payload: serde_json::json!({
+                    "lobbyId": self.lobby_id,
+                    "gameId": self.game_id,
+                    "event": payload,
+                }),
             },
         );
         Ok(())
@@ -215,15 +362,32 @@ impl GameHost for ServerGameHost {
             &topic,
             crate::ws::ServerMessage {
                 kind: "user.event".into(),
-                payload,
+                payload: serde_json::json!({
+                    "lobbyId": self.lobby_id,
+                    "gameId": self.game_id,
+                    "event": payload,
+                }),
             },
         );
         Ok(())
     }
 
     async fn send_except(&self, except_user_id: UserId, payload: Value) -> PluginResult<()> {
-        let _ = except_user_id;
-        self.broadcast(payload).await
+        let topic = format!("lobby:{}", self.lobby_id);
+        self.subscriptions.publish_except(
+            &self.sessions,
+            &topic,
+            except_user_id,
+            crate::ws::ServerMessage {
+                kind: "lobby.event".into(),
+                payload: serde_json::json!({
+                    "lobbyId": self.lobby_id,
+                    "gameId": self.game_id,
+                    "event": payload,
+                }),
+            },
+        );
+        Ok(())
     }
 
     async fn complete_match(&self, result: MatchResult) -> PluginResult<()> {
@@ -328,6 +492,29 @@ impl GameHost for ServerGameHost {
                 "save_player_result stats failed"
             );
             return Err(PluginError::Host(err.to_string()));
+        }
+
+        // Mirror the outcome onto the stored player row so match history and
+        // the finished snapshot carry rank, prize and points.
+        let players = PlayerStateRepo::new(self.redis.clone());
+        if let Ok(rows) = players.list(self.lobby_id).await {
+            if let Some(mut row) = rows
+                .into_iter()
+                .find(|row| row.user_id.as_uuid() == ctx.user_id)
+            {
+                row.rank = Some(ctx.rank);
+                row.prize_micro = ctx.prize.map(usdcx_to_micro);
+                row.wars_point = Some(wars_point);
+                row.updated_at = chrono::Utc::now().timestamp();
+                if let Err(err) = players.set(self.lobby_id, &row).await {
+                    error!(
+                        lobby_id = %self.lobby_id,
+                        user_id = %ctx.user_id,
+                        error = %err,
+                        "failed to store player result"
+                    );
+                }
+            }
         }
 
         Ok(PlayerResult {

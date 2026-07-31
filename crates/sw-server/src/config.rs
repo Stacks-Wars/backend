@@ -31,6 +31,7 @@ pub struct Config {
     pub neon_auth_base_url: String,
     pub jwt: NeonJwtConfig,
     pub admin_emails: Vec<String>,
+    pub internal_api_secret: String,
 }
 
 impl Config {
@@ -65,6 +66,7 @@ impl Config {
             .map_err(|e| anyhow!(e.to_string()))?;
 
         let admin_emails = parse_admin_emails(std::env::var("ADMIN").ok().as_deref());
+        let internal_api_secret = required_env("INTERNAL_API_SECRET")?;
 
         Ok(Self {
             host,
@@ -78,11 +80,20 @@ impl Config {
             neon_auth_base_url,
             jwt,
             admin_emails,
+            internal_api_secret,
         })
     }
 
     pub fn jwt_verifier(&self) -> Arc<NeonJwtVerifier> {
         NeonJwtVerifier::arc(self.jwt.clone())
+    }
+
+    /// Vault deployer principal — matches Clarity `PLATFORM-WALLET`.
+    pub fn platform_wallet(&self) -> &str {
+        self.sw_vault_contract
+            .split_once('.')
+            .map(|(a, _)| a)
+            .unwrap_or(self.sw_vault_contract.as_str())
     }
 }
 

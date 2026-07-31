@@ -5,6 +5,7 @@ use sqlx::PgPool;
 use sw_plugin::GameRegistry;
 
 use crate::config::Config;
+use crate::engine::EngineRegistry;
 use crate::services::neon_jwt::NeonJwtVerifier;
 use crate::ws::{SessionManager, SubscriptionManager};
 
@@ -17,6 +18,8 @@ pub struct AppState {
     pub games: Arc<GameRegistry>,
     pub sessions: Arc<SessionManager>,
     pub subscriptions: Arc<SubscriptionManager>,
+    /// Running match actors, keyed by lobby.
+    pub engines: Arc<EngineRegistry>,
     pub jwt: Arc<NeonJwtVerifier>,
 }
 
@@ -35,6 +38,7 @@ impl AppState {
             games,
             sessions: SessionManager::arc(),
             subscriptions: SubscriptionManager::arc(),
+            engines: EngineRegistry::arc(),
             jwt,
         }
     }

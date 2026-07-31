@@ -35,7 +35,10 @@ pub struct VaultClaimIntent {
 }
 
 /// Build a single claim intent for the winner. Contract pays platform + optional
-/// dev from the signed pot amount in the same transaction.
+/// game fee from the signed pot amount in the same transaction.
+///
+/// When `game_fee_pct` is 0, `dev_wallet` is still required by the ABI but is
+/// unused on-chain — callers may pass the platform principal as a placeholder.
 pub fn build_claim_intent(
     pot_micro: i64,
     game_fee_pct: u8,
