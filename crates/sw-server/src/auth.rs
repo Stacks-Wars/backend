@@ -72,11 +72,7 @@ impl FromRequestParts<AppState> for InternalSecret {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let expected = state
-            .config
-            .internal_api_secret
-            .as_deref()
-            .ok_or(AppError::Unauthorized("internal API not configured"))?;
+        let expected = state.config.internal_api_secret.as_str();
         let provided = parts
             .headers
             .get("x-internal-secret")

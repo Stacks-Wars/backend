@@ -31,7 +31,7 @@ pub struct Config {
     pub neon_auth_base_url: String,
     pub jwt: NeonJwtConfig,
     pub admin_emails: Vec<String>,
-    pub internal_api_secret: Option<String>,
+    pub internal_api_secret: String,
 }
 
 impl Config {
@@ -66,10 +66,7 @@ impl Config {
             .map_err(|e| anyhow!(e.to_string()))?;
 
         let admin_emails = parse_admin_emails(std::env::var("ADMIN").ok().as_deref());
-        let internal_api_secret = std::env::var("INTERNAL_API_SECRET")
-            .ok()
-            .map(|s| s.trim().to_owned())
-            .filter(|s| !s.is_empty());
+        let internal_api_secret = required_env("INTERNAL_API_SECRET")?;
 
         Ok(Self {
             host,

@@ -21,7 +21,7 @@ First-party games (`checkers`, `lexi-wars`, `ludo`, `ludo-rush`) register into `
 - **Redis** for lobby runtime state (required at boot)
 - **Neon Auth** on the frontend owns end-user sessions; this API verifies Neon JWTs (JWKS) on user and admin routes
 
-`DATABASE_URL`, `REDIS_URL`, `HIRO_API_KEY`, `NEON_AUTH_BASE_URL`, and `SW_VAULT_CONTRACT` are required. The process exits on missing config or failed connect/ping.
+`DATABASE_URL`, `REDIS_URL`, `HIRO_API_KEY`, `NEON_AUTH_BASE_URL`, `SW_VAULT_CONTRACT`, and `INTERNAL_API_SECRET` are required. The process exits on missing config or failed connect/ping. Use the same `INTERNAL_API_SECRET` in the Next.js app for server-to-server calls.
 
 SQL migrations live in `migrations/`. App users are upserted via `POST /users` (Bearer JWT; `id` = Neon `sub`). Custodial wallets live under `GET|POST /users/{id}/custodial-wallet`. Platform balances use `/wallet` (Hiro FT balance + Redis cache, chain activity, withdrawals) — vault escrow is on-chain via `SW_VAULT_CONTRACT`. Admin season routes require a verified JWT email on the `ADMIN` allowlist.
 
