@@ -340,6 +340,7 @@ async fn create_lobby(
 
     realtime::publish_lobby_feed(&state, realtime::LobbyFeedKind::Created, &lobby);
     realtime::publish_game_activity(&state).await;
+    state.telegram.notify_lobby_created(&state, &lobby);
 
     Ok(Json(LobbyResponse {
         lobby,
@@ -731,7 +732,7 @@ async fn leave_lobby(
     }
     if lobby.creator_id == user_id && lobby.participants.len() > 1 {
         return Err(AppError::BadRequest(
-            "creator must be last to leave".into(),
+            "host must kick all other players before leaving".into(),
         ));
     }
 
@@ -753,6 +754,19 @@ async fn leave_lobby(
             .assert_not_joined(&lobby.path, &addr, vault_txid.as_deref().unwrap())
             .await?;
         refresh_user_balance(&state, user_id).await;
+    }
+
+    // Host alone → refund already on-chain; tear down the lobby entirely.
+    let host_closing = lobby.creator_id == user_id && lobby.participants.len() == 1;
+    if host_closing {
+        let mut closed =
+            crate::services::lobby_ttl::expire_lobby(&state, lobby_id).await?;
+        closed.participants.clear();
+        return Ok(Json(LobbyResponse {
+            lobby: closed,
+            state: None,
+            players: vec![],
+        }));
     }
 
     lobbies
@@ -1064,6 +1078,8 @@ async fn start_lobby(
         state.redis.clone(),
         state.subscriptions.clone(),
         state.sessions.clone(),
+        state.games.clone(),
+        state.telegram.clone(),
     );
 
     let ctx = EngineContext {

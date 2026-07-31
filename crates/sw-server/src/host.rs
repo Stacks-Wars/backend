@@ -14,16 +14,18 @@ use sw_plugin::{
 };
 use tracing::{error, info, warn};
 
+use sw_plugin::GameRegistry;
+
 use crate::data::lobbies::PgLobbyRepo;
 use crate::data::lobby_runtime::{LobbyStateRepo, PlayerStateRepo};
 use crate::data::matches::{MatchPlayerRecord, MatchRecord, PgMatchRepo};
 use crate::data::seasons::{PgSeasonRepo, SeasonRepo};
 use crate::data::stats::{PgStatsRepo, RecordResultInput};
 use crate::data::users::PgUserRepo;
+use crate::services::telegram::TelegramNotifier;
 use crate::services::vault_oracle::{build_claim_intent, split_pot};
 use crate::ws::{SessionManager, SubscriptionManager, APP_TOPIC};
 
-#[derive(Debug)]
 pub struct ServerGameHost {
     pub lobby_id: LobbyId,
     pub lobby_path: String,
@@ -41,6 +43,8 @@ pub struct ServerGameHost {
     pub redis: ConnectionManager,
     pub subscriptions: Arc<SubscriptionManager>,
     pub sessions: Arc<SessionManager>,
+    pub games: Arc<GameRegistry>,
+    pub telegram: Arc<TelegramNotifier>,
     settled: Mutex<bool>,
 }
 
@@ -60,6 +64,8 @@ impl ServerGameHost {
         redis: ConnectionManager,
         subscriptions: Arc<SubscriptionManager>,
         sessions: Arc<SessionManager>,
+        games: Arc<GameRegistry>,
+        telegram: Arc<TelegramNotifier>,
     ) -> Self {
         Self {
             lobby_id,
@@ -75,6 +81,8 @@ impl ServerGameHost {
             redis,
             subscriptions,
             sessions,
+            games,
+            telegram,
             settled: Mutex::new(false),
         }
     }
@@ -94,6 +102,8 @@ impl ServerGameHost {
         redis: ConnectionManager,
         subscriptions: Arc<SubscriptionManager>,
         sessions: Arc<SessionManager>,
+        games: Arc<GameRegistry>,
+        telegram: Arc<TelegramNotifier>,
     ) -> Arc<Self> {
         Arc::new(Self::new(
             lobby_id,
@@ -109,6 +119,8 @@ impl ServerGameHost {
             redis,
             subscriptions,
             sessions,
+            games,
+            telegram,
         ))
     }
 
@@ -319,6 +331,16 @@ impl ServerGameHost {
                 kind: "leaderboard.updated".into(),
                 payload: serde_json::json!({ "gameId": self.game_id }),
             },
+        );
+
+        self.telegram.notify_lobby_finished_parts(
+            self.db.clone(),
+            self.redis.clone(),
+            self.games.clone(),
+            self.lobby_id,
+            result,
+            self.pot_micro,
+            self.fee_percentage,
         );
 
         info!(

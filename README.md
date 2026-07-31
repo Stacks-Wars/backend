@@ -23,6 +23,8 @@ First-party games (`checkers`, `lexi-wars`, `ludo`, `ludo-rush`) register into `
 
 `DATABASE_URL`, `REDIS_URL`, `HIRO_API_KEY`, `NEON_AUTH_BASE_URL`, `SW_VAULT_CONTRACT`, and `INTERNAL_API_SECRET` are required. The process exits on missing config or failed connect/ping. Use the same `INTERNAL_API_SECRET` in the Next.js app for server-to-server calls.
 
+Optional Telegram companion: set both `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` to announce public lobbies, post match results, and serve `/leaderboard`. `FRONTEND_URL` controls deep links (default `https://stackswars.com`).
+
 SQL migrations live in `migrations/`. App users are upserted via `POST /users` (Bearer JWT; `id` = Neon `sub`). Custodial wallets live under `GET|POST /users/{id}/custodial-wallet`. Platform balances use `/wallet` (Hiro FT balance + Redis cache, chain activity, withdrawals) — vault escrow is on-chain via `SW_VAULT_CONTRACT`. Admin season routes require a verified JWT email on the `ADMIN` allowlist.
 
 ```

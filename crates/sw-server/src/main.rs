@@ -40,6 +40,7 @@ async fn main() -> anyhow::Result<()> {
     info!(registered = game_registry.len(), "game plugins registered");
 
     let state = AppState::new(config.clone(), db, redis, Arc::new(game_registry));
+    sw_server::services::telegram::spawn_bot(state.clone());
 
     // Free waiting lobbies older than 24h can be purged without on-chain work.
     // Paid stale lobbies are refunded + expired by the Next cron (/api/cron/lobby-ttl).
