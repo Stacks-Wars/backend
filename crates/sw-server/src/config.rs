@@ -32,6 +32,12 @@ pub struct Config {
     pub jwt: NeonJwtConfig,
     pub admin_emails: Vec<String>,
     pub internal_api_secret: String,
+    /// Public web app origin for deep links (`https://stackswars.com`).
+    pub frontend_url: String,
+    /// Telegram bot token. Empty → Telegram disabled.
+    pub telegram_bot_token: Option<String>,
+    /// Target chat/channel id for lobby broadcasts. Required when bot token is set.
+    pub telegram_chat_id: Option<i64>,
 }
 
 impl Config {
@@ -68,6 +74,33 @@ impl Config {
         let admin_emails = parse_admin_emails(std::env::var("ADMIN").ok().as_deref());
         let internal_api_secret = required_env("INTERNAL_API_SECRET")?;
 
+        let frontend_url = std::env::var("FRONTEND_URL")
+            .ok()
+            .map(|s| s.trim().trim_end_matches('/').to_owned())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "https://stackswars.com".to_owned());
+
+        let telegram_bot_token = std::env::var("TELEGRAM_BOT_TOKEN")
+            .ok()
+            .map(|s| s.trim().trim_matches('"').to_owned())
+            .filter(|s| !s.is_empty());
+        let telegram_chat_id = match std::env::var("TELEGRAM_CHAT_ID")
+            .ok()
+            .map(|s| s.trim().trim_matches('"').to_owned())
+            .filter(|s| !s.is_empty())
+        {
+            Some(raw) => Some(
+                raw.parse::<i64>()
+                    .context("parse TELEGRAM_CHAT_ID as i64")?,
+            ),
+            None => None,
+        };
+        if telegram_bot_token.is_some() ^ telegram_chat_id.is_some() {
+            return Err(anyhow!(
+                "TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must both be set (or both unset)"
+            ));
+        }
+
         Ok(Self {
             host,
             port,
@@ -81,6 +114,9 @@ impl Config {
             jwt,
             admin_emails,
             internal_api_secret,
+            frontend_url,
+            telegram_bot_token,
+            telegram_chat_id,
         })
     }
 
