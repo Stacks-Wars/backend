@@ -15,12 +15,14 @@ const OUTBOUND_BUFFER: usize = 64;
 
 #[derive(Debug)]
 pub struct Session {
+    #[allow(dead_code)]
     pub id: ConnectionId,
     pub user_id: Option<UserId>,
     tx: mpsc::Sender<ServerMessage>,
 }
 
 impl Session {
+    #[allow(dead_code)]
     pub fn sender(&self) -> mpsc::Sender<ServerMessage> {
         self.tx.clone()
     }

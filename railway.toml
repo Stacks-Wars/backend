@@ -1,0 +1,12 @@
+# Railway service config for sw-server.
+# Pair this service with a Railway Redis plugin; set DATABASE_URL to Neon (or Railway Postgres).
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5
