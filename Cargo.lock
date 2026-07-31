@@ -1980,80 +1980,12 @@ dependencies = [
  "sqlx",
  "sw-domain",
  "sw-plugin",
- "sw_checkers",
- "sw_lexi_wars",
- "sw_ludo",
- "sw_ludo_rush",
  "thiserror",
  "tokio",
  "tower",
  "tower-http 0.7.0",
  "tracing",
  "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
-name = "sw_checkers"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "chrono",
- "serde",
- "serde_json",
- "sw-domain",
- "sw-plugin",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "sw_lexi_wars"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "chrono",
- "once_cell",
- "rand 0.9.5",
- "serde",
- "serde_json",
- "sw-domain",
- "sw-plugin",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "sw_ludo"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "chrono",
- "rand 0.9.5",
- "serde",
- "serde_json",
- "sw-domain",
- "sw-plugin",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "sw_ludo_rush"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "chrono",
- "rand 0.9.5",
- "serde",
- "serde_json",
- "sw-domain",
- "sw-plugin",
- "tokio",
- "tracing",
  "uuid",
 ]
 

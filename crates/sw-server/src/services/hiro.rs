@@ -493,8 +493,10 @@ struct ContractCallStub {
 
 #[derive(Debug, Deserialize)]
 struct FunctionArg {
+    #[allow(dead_code)]
     hex: Option<String>,
     repr: Option<String>,
+    #[allow(dead_code)]
     name: Option<String>,
 }
 

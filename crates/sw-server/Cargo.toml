@@ -25,10 +25,6 @@ serde_json = { workspace = true }
 sqlx = { workspace = true }
 sw-domain = { workspace = true }
 sw-plugin = { workspace = true }
-sw_checkers = { workspace = true }
-sw_lexi_wars = { workspace = true }
-sw_ludo = { workspace = true }
-sw_ludo_rush = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tower = { workspace = true }

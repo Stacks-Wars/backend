@@ -12,8 +12,6 @@ Clients live in a separate frontend. This repository does **not** depend on thos
 | `sw-plugin` | Portable game plugin contract (`GameEngine`, `GameFactory`, `GameHost`, registry) |
 | `sw-server` | HTTP + WebSocket server binary (Axum / Tokio)                                     |
 
-First-party games (`checkers`, `lexi-wars`, `ludo`, `ludo-rush`) register into `sw-server` at boot.
-
 **Stack**
 
 - **Rust** + **Axum** (HTTP + WebSocket) on **Tokio**
@@ -83,9 +81,34 @@ Requirements: Rust stable (edition 2024 / recent toolchain).
 
 ```bash
 cp .env.example .env
-# set DATABASE_URL, REDIS_URL, HIRO_API_KEY, NEON_AUTH_BASE_URL, SW_VAULT_CONTRACT
+# set DATABASE_URL, REDIS_URL, HIRO_API_KEY, NEON_AUTH_BASE_URL, SW_VAULT_CONTRACT, INTERNAL_API_SECRET
 cargo run -p sw-server
 ```
+
+## Docker / Railway
+
+Build context is this `backend/` directory. Railway should run **sw-server** (Dockerfile) + a **Redis** plugin. Postgres can stay on Neon (`DATABASE_URL`).
+
+```bash
+docker build -t sw-server .
+docker run --rm -p 8080:8080 --env-file .env -e MIGRATIONS_DIR=/app/migrations sw-server
+```
+
+Railway uses `railway.toml` (`builder = DOCKERFILE`). Set at least:
+
+| Variable              | Notes                         |
+| --------------------- | ----------------------------- |
+| `DATABASE_URL`        | Neon (or Railway Postgres)    |
+| `REDIS_URL`           | from Railway Redis            |
+| `HIRO_API_KEY`        |                               |
+| `NEON_AUTH_BASE_URL`  |                               |
+| `SW_VAULT_CONTRACT`   |                               |
+| `INTERNAL_API_SECRET` | same value as the Next.js app |
+| `FRONTEND_URL`        | production site origin        |
+| `PORT`                | Railway injects this          |
+| `TELEGRAM_*`          | optional                      |
+
+`MIGRATIONS_DIR` defaults to `/app/migrations` in the image. Health check: `GET /health`.
 
 Useful endpoints:
 
