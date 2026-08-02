@@ -17,13 +17,23 @@ use crate::services::hiro::HiroClient;
 use crate::services::wallet_chain::WalletChainService;
 use crate::state::AppState;
 
-pub fn router() -> Router<AppState> {
+/// Withdraw prepare/complete — Sensitive rate tier.
+pub fn sensitive_router() -> Router<AppState> {
     Router::new()
-        .route("/balance/{user_id}", get(get_balance))
-        .route("/balance/{user_id}/refresh", post(refresh_balance))
-        .route("/activity/{user_id}", get(list_activity))
         .route("/withdrawals/prepare", post(prepare_withdrawal))
         .route("/withdrawals/complete", post(complete_withdrawal))
+}
+
+/// Remaining wallet mutations — Write rate tier.
+pub fn write_router() -> Router<AppState> {
+    Router::new().route("/balance/{user_id}/refresh", post(refresh_balance))
+}
+
+/// Wallet reads — Global tier only.
+pub fn read_router() -> Router<AppState> {
+    Router::new()
+        .route("/balance/{user_id}", get(get_balance))
+        .route("/activity/{user_id}", get(list_activity))
         .route(
             "/custodial/{user_id}/signing-material",
             get(get_signing_material),

@@ -25,14 +25,22 @@ use crate::services::vault_verify::VaultReader;
 use crate::services::wallet_chain::WalletChainService;
 use crate::state::AppState;
 
-pub fn router() -> Router<AppState> {
+/// Create / join / seat / vault-claim — Sensitive rate tier.
+pub fn sensitive_router() -> Router<AppState> {
     Router::new()
-        .route("/", get(list_lobbies).post(create_lobby))
-        .route("/allocate-path", post(allocate_path))
-        .route("/by-path/{path}", get(get_lobby_by_path))
-        .route("/{lobby_id}", get(get_lobby))
-        .route("/{lobby_id}/reserve-seat", post(reserve_seat).delete(release_seat))
+        .route("/", post(create_lobby))
+        .route(
+            "/{lobby_id}/reserve-seat",
+            post(reserve_seat).delete(release_seat),
+        )
         .route("/{lobby_id}/join", post(join_lobby))
+        .route("/{lobby_id}/vault-claim", post(confirm_vault_claim))
+}
+
+/// Remaining lobby mutations — Write rate tier.
+pub fn write_router() -> Router<AppState> {
+    Router::new()
+        .route("/allocate-path", post(allocate_path))
         .route("/{lobby_id}/join-requests", post(create_join_request))
         .route(
             "/{lobby_id}/join-requests/{user_id}/approve",
@@ -44,13 +52,20 @@ pub fn router() -> Router<AppState> {
         )
         .route("/{lobby_id}/leave", post(leave_lobby))
         .route("/{lobby_id}/kick", post(kick_lobby_player))
+        .route("/{lobby_id}/ready", post(set_ready))
+        .route("/{lobby_id}/start", post(start_lobby))
+}
+
+/// Lobby reads — Global tier only.
+pub fn read_router() -> Router<AppState> {
+    Router::new()
+        .route("/", get(list_lobbies))
+        .route("/by-path/{path}", get(get_lobby_by_path))
+        .route("/{lobby_id}", get(get_lobby))
         .route(
             "/{lobby_id}/players/{user_id}/vault-address",
             get(get_kick_target_address),
         )
-        .route("/{lobby_id}/ready", post(set_ready))
-        .route("/{lobby_id}/start", post(start_lobby))
-        .route("/{lobby_id}/vault-claim", post(confirm_vault_claim))
 }
 
 fn require_vault_txid(provided: Option<&str>, needs_vault: bool) -> AppResult<Option<String>> {

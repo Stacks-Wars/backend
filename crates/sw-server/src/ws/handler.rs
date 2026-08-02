@@ -15,6 +15,7 @@ use crate::data::chat::LobbyChatRepo;
 use crate::data::lobbies::PgLobbyRepo;
 use crate::data::users::PgUserRepo;
 use crate::engine::DispatchError;
+use crate::middleware::rate_limit::{check_ws_connect, rate_limited_response, ClientIp};
 use crate::services::realtime;
 use crate::state::AppState;
 use sw_domain::{sanitize_chat_body, LobbyChatMessage, LobbyId, UserId};
@@ -23,8 +24,25 @@ pub fn router() -> Router<AppState> {
     Router::new().route("/app", get(upgrade))
 }
 
-async fn upgrade(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
+async fn upgrade(
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
+) -> impl IntoResponse {
+    let mut redis = state.redis.clone();
+    match check_ws_connect(&mut redis, &ip).await {
+        Ok(decision) if !decision.allowed => {
+            tracing::warn!(%ip, "ws connect rate limit exceeded");
+            return rate_limited_response(&decision).into_response();
+        }
+        Ok(_) => {}
+        Err(err) => {
+            tracing::warn!(error = %err, "ws connect rate limit redis error; fail-open");
+        }
+    }
+
     ws.on_upgrade(move |socket| handle_socket(socket, state))
+        .into_response()
 }
 
 async fn handle_socket(socket: WebSocket, state: AppState) {

@@ -1,5 +1,5 @@
 use axum::extract::{Path, Query, State};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -18,24 +18,37 @@ use crate::services::neon_jwt::parse_neon_sub;
 use crate::state::AppState;
 use sw_domain::{User, UserId};
 
-pub fn router() -> Router<AppState> {
+/// User mutations — Write rate tier.
+pub fn write_router() -> Router<AppState> {
     Router::new()
         .route("/", post(upsert_user))
+        .route("/me/vault-drafts", post(save_vault_draft))
+        .route(
+            "/me/vault-drafts/{kind}/{lobby_path}",
+            delete(delete_vault_draft),
+        )
+        .route("/{user_id}", patch(update_profile))
+        .route(
+            "/{user_id}/custodial-wallet",
+            post(create_custodial_wallet),
+        )
+}
+
+/// User reads — Global tier only.
+pub fn read_router() -> Router<AppState> {
+    Router::new()
         .route("/cards", get(get_user_cards))
         .route("/by-username/{username}", get(get_user_by_username))
         .route("/username-available/{username}", get(check_username))
-        .route("/me/vault-drafts", get(list_vault_drafts).post(save_vault_draft))
+        .route("/me/vault-drafts", get(list_vault_drafts))
         .route(
             "/me/vault-drafts/{kind}/{lobby_path}",
-            get(get_vault_draft).delete(delete_vault_draft),
+            get(get_vault_draft),
         )
-        .route("/{user_id}", get(get_user).patch(update_profile))
+        .route("/{user_id}", get(get_user))
         .route("/{user_id}/profile", get(get_profile))
         .route("/{user_id}/matches", get(get_match_history))
-        .route(
-            "/{user_id}/custodial-wallet",
-            get(get_custodial_wallet).post(create_custodial_wallet),
-        )
+        .route("/{user_id}/custodial-wallet", get(get_custodial_wallet))
 }
 
 /// 3–24 chars, lowercase alphanumeric plus `_` and `-`, must start with a letter.

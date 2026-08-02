@@ -18,13 +18,18 @@ use crate::services::vault_verify::VaultReader;
 use crate::services::wallet_chain::WalletChainService;
 use crate::state::AppState;
 
-pub fn router() -> Router<AppState> {
+/// Admin mutations — Write rate tier (still requires admin / internal auth).
+pub fn write_router() -> Router<AppState> {
     Router::new()
         .route("/seasons", post(create_season))
         .route("/seasons/{season_id}", put(update_season))
-        .route("/lobbies/stale", get(list_stale_lobbies))
         .route("/lobbies/{lobby_id}/expire-seat", post(expire_seat))
         .route("/lobbies/{lobby_id}/expire", post(expire_lobby))
+}
+
+/// Admin reads — Global tier only.
+pub fn read_router() -> Router<AppState> {
+    Router::new().route("/lobbies/stale", get(list_stale_lobbies))
 }
 
 #[derive(Debug, Deserialize)]

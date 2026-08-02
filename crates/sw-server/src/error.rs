@@ -28,6 +28,9 @@ pub enum AppError {
     #[error("lobby is full")]
     LobbyFull,
 
+    #[error("rate limit exceeded")]
+    RateLimited,
+
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }
@@ -54,6 +57,7 @@ impl AppError {
             }
             Self::Conflict(_) => (StatusCode::CONFLICT, "conflict"),
             Self::LobbyFull => (StatusCode::CONFLICT, "lobby_full"),
+            Self::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
             Self::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
         }
     }
