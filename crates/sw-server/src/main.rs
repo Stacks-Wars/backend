@@ -67,9 +67,12 @@ async fn main() -> anyhow::Result<()> {
         .with_context(|| format!("bind {addr}"))?;
 
     info!(%addr, "listening");
-    axum::serve(listener, app)
-        .await
-        .context("serve http")?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .context("serve http")?;
 
     Ok(())
 }
