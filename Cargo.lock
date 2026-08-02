@@ -2015,9 +2015,9 @@ dependencies = [
 
 [[package]]
 name = "sw_checkers"
-version = "1.0.0"
+version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0282900a50340bdb03d04ef135b58fcb926d33f3defcceae376ddddd5d64a57e"
+checksum = "b9bb70f35ddf1d5f37f06cb6c66ffb284cf0f410b001489d1d63d4655e23d037"
 dependencies = [
  "async-trait",
  "chrono",
