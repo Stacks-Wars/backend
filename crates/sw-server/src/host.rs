@@ -269,6 +269,9 @@ impl ServerGameHost {
             })],
             None => Vec::new(),
         };
+        // Clients render standings from this list — `lobby.state` is not
+        // rebroadcast on finish, so ranks must travel with the event.
+        let standings = self.build_standings_payload(result).await;
         let finished_payload = serde_json::json!({
             "lobbyId": self.lobby_id,
             "lobbyPath": self.lobby_path,
@@ -276,6 +279,7 @@ impl ServerGameHost {
             "winners": result.winners,
             "needsOnChainClaim": intent.is_some(),
             "claims": claims,
+            "standings": standings,
         });
         if let Err(err) = crate::data::lobby_finished::LobbyFinishedRepo::new(
             self.redis.clone(),
@@ -354,6 +358,48 @@ impl ServerGameHost {
         );
         Ok(())
     }
+
+    /// Ordered final standings for the `lobby.finished` payload.
+    /// Prefers Redis player ranks (set by `save_player_result`); falls back to
+    /// `MatchResult.rankings` order when ranks are missing.
+    async fn build_standings_payload(&self, result: &MatchResult) -> Vec<Value> {
+        let players = self.get_player_states().await.unwrap_or_default();
+
+        let mut with_rank: Vec<&PlayerStateWire> =
+            players.iter().filter(|p| p.rank.is_some()).collect();
+        with_rank.sort_by_key(|p| p.rank.unwrap_or(usize::MAX));
+
+        if !with_rank.is_empty() {
+            return with_rank
+                .into_iter()
+                .map(|p| {
+                    serde_json::json!({
+                        "userId": p.user_id,
+                        "rank": p.rank,
+                        "prizeMicro": p.prize_micro,
+                        "warsPoint": p.wars_point,
+                    })
+                })
+                .collect();
+        }
+
+        result
+            .rankings
+            .iter()
+            .enumerate()
+            .map(|(idx, user_id)| {
+                let player = players
+                    .iter()
+                    .find(|p| UserId::from(p.user_id) == *user_id);
+                serde_json::json!({
+                    "userId": user_id,
+                    "rank": idx + 1,
+                    "prizeMicro": player.and_then(|p| p.prize_micro),
+                    "warsPoint": player.and_then(|p| p.wars_point),
+                })
+            })
+            .collect()
+    }
 }
 
 #[async_trait]
@@ -418,13 +464,12 @@ impl GameHost for ServerGameHost {
 
     async fn finish_lobby(&self) -> PluginResult<()> {
         let players = self.get_player_states().await.unwrap_or_default();
-        let mut rankings: Vec<UserId> = players
+        let mut ranked: Vec<(usize, UserId)> = players
             .iter()
             .filter_map(|p| p.rank.map(|r| (r, UserId::from(p.user_id))))
-            .collect::<Vec<_>>()
-            .into_iter()
-            .map(|(_, u)| u)
             .collect();
+        ranked.sort_by_key(|(rank, _)| *rank);
+        let mut rankings: Vec<UserId> = ranked.into_iter().map(|(_, u)| u).collect();
         if rankings.is_empty() {
             rankings = players
                 .iter()

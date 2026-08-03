@@ -129,13 +129,16 @@ async fn restore_finished_payload(
             .get(lobby.id)
             .await?
     {
-        // Keep player prizes/ranks in sync even when Redis players aged oddly.
+        // Prefer match-history ranks when available; otherwise apply the
+        // standings embedded in the finished payload (live-finish path).
         if let Ok(Some((_, _, _, rows))) =
             crate::data::matches::PgMatchRepo::new(state.db.clone())
                 .get_by_lobby(lobby.id)
                 .await
         {
             apply_match_player_outcomes(players, &rows);
+        } else {
+            apply_finished_standings(players, &payload);
         }
         return Ok(Some(payload));
     }
@@ -179,6 +182,36 @@ fn apply_match_player_outcomes(
             player.rank = rank.map(|r| r as usize);
             player.prize_micro = Some(*prize_micro);
             player.wars_point = Some(*wars_point);
+        }
+    }
+}
+
+fn apply_finished_standings(players: &mut [PlayerState], payload: &Value) {
+    let Some(standings) = payload.get("standings").and_then(|v| v.as_array()) else {
+        return;
+    };
+    for row in standings {
+        let Some(user_id) = row
+            .get("userId")
+            .and_then(|v| v.as_str())
+            .and_then(|s| Uuid::parse_str(s).ok())
+        else {
+            continue;
+        };
+        let Some(player) = players
+            .iter_mut()
+            .find(|p| p.user_id.as_uuid() == user_id)
+        else {
+            continue;
+        };
+        if let Some(rank) = row.get("rank").and_then(|v| v.as_u64()) {
+            player.rank = Some(rank as usize);
+        }
+        if let Some(prize) = row.get("prizeMicro").and_then(|v| v.as_i64()) {
+            player.prize_micro = Some(prize);
+        }
+        if let Some(points) = row.get("warsPoint").and_then(|v| v.as_i64()) {
+            player.wars_point = Some(points);
         }
     }
 }
