@@ -70,6 +70,10 @@ struct UserRow {
     wallet_address: Option<String>,
     wallet_verified_at: Option<DateTime<Utc>>,
     avatar_url: Option<String>,
+    lobby_alerts_enabled: bool,
+    legal_accepted_at: Option<DateTime<Utc>>,
+    legal_version: Option<String>,
+    deleted_at: Option<DateTime<Utc>>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -147,7 +151,8 @@ impl PgUserRepo {
             r#"
             SELECT id, username, display_name, email, email_verified_at,
                    wallet_address, wallet_verified_at, avatar_url,
-                   created_at, updated_at
+                   lobby_alerts_enabled, legal_accepted_at, legal_version,
+                   deleted_at, created_at, updated_at
             FROM users
             WHERE id = $1
             "#,
@@ -165,9 +170,10 @@ impl PgUserRepo {
             r#"
             SELECT id, username, display_name, email, email_verified_at,
                    wallet_address, wallet_verified_at, avatar_url,
-                   created_at, updated_at
+                   lobby_alerts_enabled, legal_accepted_at, legal_version,
+                   deleted_at, created_at, updated_at
             FROM users
-            WHERE username = $1
+            WHERE username = $1 AND deleted_at IS NULL
             "#,
         )
         .bind(username)
@@ -204,7 +210,8 @@ impl PgUserRepo {
             WHERE id = $1
             RETURNING id, username, display_name, email, email_verified_at,
                       wallet_address, wallet_verified_at, avatar_url,
-                      created_at, updated_at
+                      lobby_alerts_enabled, legal_accepted_at, legal_version,
+                      deleted_at, created_at, updated_at
             "#,
         )
         .bind(id.as_uuid())
@@ -276,7 +283,8 @@ impl PgUserRepo {
                 updated_at = now()
             RETURNING id, username, display_name, email, email_verified_at,
                       wallet_address, wallet_verified_at, avatar_url,
-                      created_at, updated_at
+                      lobby_alerts_enabled, legal_accepted_at, legal_version,
+                      deleted_at, created_at, updated_at
             "#,
         )
         .bind(input.id.as_uuid())
@@ -287,6 +295,10 @@ impl PgUserRepo {
         .fetch_one(&self.pool)
         .await
         .map_err(|err| AppError::Internal(err.into()))?;
+
+        if row.deleted_at.is_some() {
+            return Err(AppError::Unauthorized("account deleted"));
+        }
 
         Ok(User::from(row))
     }
@@ -369,4 +381,117 @@ impl PgUserRepo {
             .await?
             .ok_or_else(|| AppError::Internal(anyhow::anyhow!("custodial wallet missing after insert")))
     }
+
+    pub async fn prefs(&self, id: UserId) -> AppResult<Option<UserPrefs>> {
+        let row = sqlx::query_as::<_, UserRow>(
+            r#"
+            SELECT id, username, display_name, email, email_verified_at,
+                   wallet_address, wallet_verified_at, avatar_url,
+                   lobby_alerts_enabled, legal_accepted_at, legal_version,
+                   deleted_at, created_at, updated_at
+            FROM users
+            WHERE id = $1
+            "#,
+        )
+        .bind(id.as_uuid())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|err| AppError::Internal(err.into()))?;
+
+        Ok(row.map(|r| UserPrefs {
+            lobby_alerts_enabled: r.lobby_alerts_enabled,
+            legal_accepted_at: r.legal_accepted_at,
+            legal_version: r.legal_version,
+            deleted_at: r.deleted_at,
+        }))
+    }
+
+    pub async fn accept_legal(&self, id: UserId, version: &str) -> AppResult<()> {
+        let n = sqlx::query(
+            r#"
+            UPDATE users SET
+                legal_accepted_at = now(),
+                legal_version = $2,
+                updated_at = now()
+            WHERE id = $1 AND deleted_at IS NULL
+            "#,
+        )
+        .bind(id.as_uuid())
+        .bind(version)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| AppError::Internal(err.into()))?
+        .rows_affected();
+        if n == 0 {
+            return Err(AppError::NotFound("user"));
+        }
+        Ok(())
+    }
+
+    pub async fn set_lobby_alerts(&self, id: UserId, enabled: bool) -> AppResult<()> {
+        let n = sqlx::query(
+            r#"
+            UPDATE users SET lobby_alerts_enabled = $2, updated_at = now()
+            WHERE id = $1 AND deleted_at IS NULL
+            "#,
+        )
+        .bind(id.as_uuid())
+        .bind(enabled)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| AppError::Internal(err.into()))?
+        .rows_affected();
+        if n == 0 {
+            return Err(AppError::NotFound("user"));
+        }
+        Ok(())
+    }
+
+    /// Scrub PII and disable the custodial wallet. Keeps the row for FK history.
+    pub async fn anonymize(&self, id: UserId) -> AppResult<()> {
+        let tombstone = format!("deleted+{}@invalid", id.as_uuid());
+        sqlx::query(
+            r#"
+            UPDATE users SET
+                username = NULL,
+                display_name = 'Deleted player',
+                email = $2,
+                email_verified_at = NULL,
+                wallet_address = NULL,
+                wallet_verified_at = NULL,
+                avatar_url = NULL,
+                lobby_alerts_enabled = false,
+                deleted_at = now(),
+                updated_at = now()
+            WHERE id = $1 AND deleted_at IS NULL
+            "#,
+        )
+        .bind(id.as_uuid())
+        .bind(&tombstone)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| AppError::Internal(err.into()))?;
+
+        sqlx::query(r#"DELETE FROM custodial_wallets WHERE user_id = $1"#)
+            .bind(id.as_uuid())
+            .execute(&self.pool)
+            .await
+            .map_err(|err| AppError::Internal(err.into()))?;
+
+        sqlx::query(r#"DELETE FROM user_game_stats WHERE user_id = $1"#)
+            .bind(id.as_uuid())
+            .execute(&self.pool)
+            .await
+            .map_err(|err| AppError::Internal(err.into()))?;
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct UserPrefs {
+    pub lobby_alerts_enabled: bool,
+    pub legal_accepted_at: Option<DateTime<Utc>>,
+    pub legal_version: Option<String>,
+    pub deleted_at: Option<DateTime<Utc>>,
 }

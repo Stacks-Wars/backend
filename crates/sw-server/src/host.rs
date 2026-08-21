@@ -8,6 +8,7 @@ use redis::aio::ConnectionManager;
 use serde_json::Value;
 use sqlx::PgPool;
 use sw_domain::{usdcx_to_micro, GameId, LobbyId, LobbyStatus, MatchId, UserId};
+use uuid::Uuid;
 use sw_plugin::{
     calculate_wars_point, GameHost, MatchResult, PlayerResult, PlayerStateWire, PluginError,
     PluginResult, WarsPointContext,
@@ -22,6 +23,7 @@ use crate::data::matches::{MatchPlayerRecord, MatchRecord, PgMatchRepo};
 use crate::data::seasons::{PgSeasonRepo, SeasonRepo};
 use crate::data::stats::{PgStatsRepo, RecordResultInput};
 use crate::data::users::PgUserRepo;
+use crate::services::push::PushService;
 use crate::services::telegram::TelegramNotifier;
 use crate::services::vault_oracle::{build_claim_intent, split_pot};
 use crate::ws::{SessionManager, SubscriptionManager, APP_TOPIC};
@@ -45,6 +47,7 @@ pub struct ServerGameHost {
     pub sessions: Arc<SessionManager>,
     pub games: Arc<GameRegistry>,
     pub telegram: Arc<TelegramNotifier>,
+    pub push: crate::services::push::PushService,
     settled: Mutex<bool>,
 }
 
@@ -66,6 +69,7 @@ impl ServerGameHost {
         sessions: Arc<SessionManager>,
         games: Arc<GameRegistry>,
         telegram: Arc<TelegramNotifier>,
+        push: PushService,
     ) -> Self {
         Self {
             lobby_id,
@@ -83,6 +87,7 @@ impl ServerGameHost {
             sessions,
             games,
             telegram,
+            push,
             settled: Mutex::new(false),
         }
     }
@@ -104,6 +109,7 @@ impl ServerGameHost {
         sessions: Arc<SessionManager>,
         games: Arc<GameRegistry>,
         telegram: Arc<TelegramNotifier>,
+        push: PushService,
     ) -> Arc<Self> {
         Arc::new(Self::new(
             lobby_id,
@@ -121,6 +127,7 @@ impl ServerGameHost {
             sessions,
             games,
             telegram,
+            push,
         ))
     }
 
@@ -299,6 +306,20 @@ impl ServerGameHost {
         };
         self.subscriptions.publish(&self.sessions, &topic, msg);
 
+        let winner_ids: Vec<Uuid> = result
+            .winners
+            .iter()
+            .map(|w| w.as_uuid())
+            .collect();
+        crate::services::push::spawn_users_notice(
+            self.push.clone(),
+            self.db.clone(),
+            winner_ids,
+            "Match finished".into(),
+            "Standings are up.".into(),
+            format!("/room/{}", self.lobby_path),
+        );
+
         // Global feed: drop the lobby from the browser, refresh leaderboards,
         // and give the landing page a result to show.
         self.subscriptions.publish(
@@ -312,6 +333,12 @@ impl ServerGameHost {
                     "gameId": self.game_id,
                 }),
             },
+        );
+        crate::services::push::spawn_lobby_close(
+            self.push.clone(),
+            self.db.clone(),
+            self.creator_id,
+            self.lobby_path.clone(),
         );
         self.subscriptions.publish(
             &self.sessions,

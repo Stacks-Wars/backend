@@ -356,6 +356,14 @@ async fn create_lobby(
     realtime::publish_lobby_feed(&state, realtime::LobbyFeedKind::Created, &lobby);
     realtime::publish_game_activity(&state).await;
     state.telegram.notify_lobby_created(&state, &lobby);
+    crate::services::push::spawn_lobby_created(
+        state.push.clone(),
+        state.db.clone(),
+        creator_id,
+        lobby.name.clone(),
+        lobby.path.clone(),
+        lobby.game_id.as_str().to_owned(),
+    );
 
     Ok(Json(LobbyResponse {
         lobby,
@@ -979,6 +987,14 @@ async fn confirm_vault_claim(
             "payoutMicro": body.amount_micro,
         }),
     );
+    crate::services::push::spawn_user_notice(
+        state.push.clone(),
+        state.db.clone(),
+        user_id,
+        "Winnings received".into(),
+        "Your balance has been updated.".into(),
+        "/wallet".into(),
+    );
 
     Ok(Json(serde_json::json!({
         "ok": true,
@@ -1095,6 +1111,7 @@ async fn start_lobby(
         state.sessions.clone(),
         state.games.clone(),
         state.telegram.clone(),
+        state.push.clone(),
     );
 
     let ctx = EngineContext {

@@ -13,3 +13,4 @@ pub mod stats;
 pub mod telegram;
 pub mod users;
 pub mod vault_drafts;
+pub mod push;

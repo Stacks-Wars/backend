@@ -427,6 +427,42 @@ impl PgLobbyRepo {
             .map_err(|e| AppError::Internal(e.into()))?;
         Ok(())
     }
+
+    pub async fn has_active_participation(&self, user_id: UserId) -> AppResult<bool> {
+        let exists: bool = sqlx::query_scalar(
+            r#"
+            SELECT EXISTS(
+                SELECT 1 FROM lobbies
+                WHERE $1 = ANY(participants)
+                  AND status IN ('waiting', 'starting', 'in_progress')
+            )
+            "#,
+        )
+        .bind(user_id.as_uuid())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+        Ok(exists)
+    }
+
+    pub async fn list_waiting_created_by(&self, user_id: UserId) -> AppResult<Vec<Lobby>> {
+        let rows = sqlx::query_as::<_, LobbyRow>(
+            r#"
+            SELECT id, path, name, description, game_id, creator_id,
+                   entry_amount_micro, pot_micro,
+                   is_private, is_sponsored, status, participants,
+                   created_at, updated_at
+            FROM lobbies
+            WHERE creator_id = $1 AND status = 'waiting'
+            "#,
+        )
+        .bind(user_id.as_uuid())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+
+        rows.into_iter().map(LobbyRow::into_lobby).collect()
+    }
 }
 
 /// First 8 hex chars of a UUID without dashes.

@@ -98,6 +98,12 @@ pub async fn expire_lobby(state: &AppState, lobby_id: LobbyId) -> AppResult<Lobb
     realtime::publish_lobby_feed(state, LobbyFeedKind::Removed, &lobby);
     realtime::publish_game_activity(state).await;
     state.telegram.notify_lobby_deleted(state, &lobby);
+    crate::services::push::spawn_lobby_close(
+        state.push.clone(),
+        state.db.clone(),
+        lobby.creator_id,
+        lobby.path.clone(),
+    );
 
     info!(
         lobby_id = %lobby_id,
