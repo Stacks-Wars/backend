@@ -385,6 +385,9 @@ mod tests {
             frontend_url: "https://stackswars.com".into(),
             telegram_bot_token: None,
             telegram_chat_id: None,
+            vapid_public_key: None,
+            vapid_private_key: None,
+            vapid_subject: "mailto:contact@mail.stackswars.com".into(),
         };
         AppState::new(config, db, redis, Arc::new(GameRegistry::new()))
     }

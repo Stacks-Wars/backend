@@ -47,3 +47,4 @@ tower-http = { version = "0.7.0", features = ["cors", "trace"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 uuid = { version = "1.24.0", features = ["serde", "v4", "v7"] }
+web-push = "0.10"

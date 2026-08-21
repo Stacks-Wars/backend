@@ -6,3 +6,4 @@ pub mod telegram;
 pub mod vault_oracle;
 pub mod vault_verify;
 pub mod wallet_chain;
+pub mod push;

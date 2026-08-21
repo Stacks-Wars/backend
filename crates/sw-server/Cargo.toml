@@ -36,6 +36,7 @@ tower-http = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 uuid = { workspace = true }
+web-push = { workspace = true }
 
 [dev-dependencies]
 http-body-util = "0.1"

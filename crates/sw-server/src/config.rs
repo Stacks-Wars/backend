@@ -38,6 +38,9 @@ pub struct Config {
     pub telegram_bot_token: Option<String>,
     /// Target chat/channel id for lobby broadcasts. Required when bot token is set.
     pub telegram_chat_id: Option<i64>,
+    pub vapid_public_key: Option<String>,
+    pub vapid_private_key: Option<String>,
+    pub vapid_subject: String,
 }
 
 impl Config {
@@ -101,6 +104,29 @@ impl Config {
             ));
         }
 
+        let vapid_public_key = std::env::var("VAPID_PUBLIC_KEY")
+            .ok()
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty());
+        let vapid_private_key = std::env::var("VAPID_PRIVATE_KEY")
+            .ok()
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty());
+        let vapid_subject = std::env::var("VAPID_SUBJECT")
+            .ok()
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "mailto:contact@mail.stackswars.com".to_owned());
+        let vapid_subject = if vapid_subject.starts_with("mailto:")
+            || vapid_subject.starts_with("https://")
+        {
+            vapid_subject
+        } else if vapid_subject.contains('@') {
+            format!("mailto:{vapid_subject}")
+        } else {
+            vapid_subject
+        };
+
         Ok(Self {
             host,
             port,
@@ -117,6 +143,9 @@ impl Config {
             frontend_url,
             telegram_bot_token,
             telegram_chat_id,
+            vapid_public_key,
+            vapid_private_key,
+            vapid_subject,
         })
     }
 
