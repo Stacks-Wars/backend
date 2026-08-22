@@ -11,7 +11,8 @@ use crate::data::push::PushSubscriptionRepo;
 use crate::data::seasons::{PgSeasonRepo, SeasonRepo};
 use crate::data::stats::{PgStatsRepo, UserStatLine};
 use crate::data::users::{
-    CustodialWalletInput, PgUserRepo, UpdateProfileInput, UpsertUserInput, UserCard,
+    kms_key_uses_aad, CustodialWalletInput, PgUserRepo, UpdateProfileInput, UpsertUserInput,
+    UserCard,
 };
 use crate::data::vault_drafts::{VaultDraft, VaultDraftRepo};
 use crate::error::{AppError, AppResult};
@@ -451,6 +452,11 @@ async fn create_custodial_wallet(
     {
         return Err(AppError::BadRequest(
             "custodial wallet fields must be non-empty".into(),
+        ));
+    }
+    if !kms_key_uses_aad(&body.kms_key_version) {
+        return Err(AppError::BadRequest(
+            "new custodial wallets must use KMS key version 2+".into(),
         ));
     }
 
