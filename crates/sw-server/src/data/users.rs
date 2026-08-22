@@ -5,6 +5,21 @@ use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
 
+/// KMS version 1 / `local:dev1` has no AAD. Version 2+ does.
+pub fn kms_key_uses_aad(kms_key_version: &str) -> bool {
+    kms_wrap_version(kms_key_version) >= 2
+}
+
+fn kms_wrap_version(kms_key_version: &str) -> u32 {
+    if let Some(rest) = kms_key_version.rsplit_once("/cryptoKeyVersions/") {
+        return rest.1.parse().unwrap_or(1);
+    }
+    if let Some(rest) = kms_key_version.strip_prefix("local:dev") {
+        return rest.parse().unwrap_or(1);
+    }
+    1
+}
+
 #[derive(Debug, Clone)]
 pub struct UpsertUserInput {
     pub id: UserId,
@@ -52,6 +67,7 @@ pub struct CustodialWalletPublic {
 /// Includes ciphertext for server-action signing (internal secret only).
 #[derive(Debug, Clone)]
 pub struct CustodialWalletSecret {
+    pub id: Uuid,
     pub user_id: Uuid,
     pub stx_address: String,
     pub public_key: String,
@@ -88,6 +104,7 @@ struct CustodialWalletRow {
 
 #[derive(Debug, sqlx::FromRow)]
 struct CustodialWalletSecretRow {
+    id: Uuid,
     user_id: Uuid,
     stx_address: String,
     public_key: String,
@@ -127,6 +144,7 @@ impl From<CustodialWalletRow> for CustodialWalletPublic {
 impl From<CustodialWalletSecretRow> for CustodialWalletSecret {
     fn from(row: CustodialWalletSecretRow) -> Self {
         Self {
+            id: row.id,
             user_id: row.user_id,
             stx_address: row.stx_address,
             public_key: row.public_key,
@@ -329,7 +347,7 @@ impl PgUserRepo {
     ) -> AppResult<Option<CustodialWalletSecret>> {
         let row = sqlx::query_as::<_, CustodialWalletSecretRow>(
             r#"
-            SELECT user_id, stx_address, public_key, network,
+            SELECT id, user_id, stx_address, public_key, network,
                    encrypted_mnemonic, kms_key_version
             FROM custodial_wallets
             WHERE user_id = $1 AND status = 'active'
@@ -380,6 +398,36 @@ impl PgUserRepo {
         self.get_custodial_wallet(user_id)
             .await?
             .ok_or_else(|| AppError::Internal(anyhow::anyhow!("custodial wallet missing after insert")))
+    }
+
+    pub async fn update_custodial_wallet_encryption(
+        &self,
+        user_id: UserId,
+        encrypted_mnemonic: &str,
+        kms_key_version: &str,
+    ) -> AppResult<bool> {
+        let result = sqlx::query(
+            r#"
+            UPDATE custodial_wallets
+            SET encrypted_mnemonic = $2,
+                kms_key_version = $3,
+                updated_at = now()
+            WHERE user_id = $1
+              AND status = 'active'
+              AND (
+                    kms_key_version ~ '/cryptoKeyVersions/1$'
+                    OR kms_key_version = 'local:dev1'
+                  )
+            "#,
+        )
+        .bind(user_id.as_uuid())
+        .bind(encrypted_mnemonic)
+        .bind(kms_key_version)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| AppError::Internal(err.into()))?;
+
+        Ok(result.rows_affected() > 0)
     }
 
     pub async fn prefs(&self, id: UserId) -> AppResult<Option<UserPrefs>> {

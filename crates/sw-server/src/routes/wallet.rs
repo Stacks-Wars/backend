@@ -7,11 +7,11 @@ use serde::{Deserialize, Serialize};
 use sw_domain::{ChainActivityItem, UserId, WalletBalance};
 use uuid::Uuid;
 
-use crate::auth::AuthUser;
+use crate::auth::{AuthUser, InternalSecret};
 use crate::config::{
     MAX_WITHDRAW_MICRO, MIN_WITHDRAW_MICRO, USDCX_ASSET_NAME, USDCX_CONTRACT,
 };
-use crate::data::users::PgUserRepo;
+use crate::data::users::{kms_key_uses_aad, PgUserRepo};
 use crate::error::{AppError, AppResult};
 use crate::services::hiro::HiroClient;
 use crate::services::wallet_chain::WalletChainService;
@@ -26,18 +26,23 @@ pub fn sensitive_router() -> Router<AppState> {
 
 /// Remaining wallet mutations — Write rate tier.
 pub fn write_router() -> Router<AppState> {
-    Router::new().route("/balance/{user_id}/refresh", post(refresh_balance))
-}
-
-/// Wallet reads — Global tier only.
-pub fn read_router() -> Router<AppState> {
     Router::new()
-        .route("/balance/{user_id}", get(get_balance))
-        .route("/activity/{user_id}", get(list_activity))
+        .route("/balance/{user_id}/refresh", post(refresh_balance))
         .route(
             "/custodial/{user_id}/signing-material",
             get(get_signing_material),
         )
+        .route(
+            "/custodial/{user_id}/encryption",
+            axum::routing::patch(update_custodial_encryption),
+        )
+}
+
+/// Wallet reads — Global tier only. Ciphertext never lives here.
+pub fn read_router() -> Router<AppState> {
+    Router::new()
+        .route("/balance/{user_id}", get(get_balance))
+        .route("/activity/{user_id}", get(list_activity))
 }
 
 fn wallet_chain(state: &AppState) -> WalletChainService {
@@ -216,6 +221,7 @@ async fn complete_withdrawal(
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SigningMaterial {
+    id: Uuid,
     user_id: Uuid,
     stx_address: String,
     public_key: String,
@@ -227,16 +233,16 @@ struct SigningMaterial {
 
 async fn get_signing_material(
     State(state): State<AppState>,
-    auth: AuthUser,
+    _secret: InternalSecret,
     Path(user_id): Path<Uuid>,
 ) -> AppResult<Json<SigningMaterial>> {
-    auth.require_self(user_id)?;
     let secret = PgUserRepo::new(state.db.clone())
         .get_custodial_wallet_secret(UserId::from(user_id))
         .await?
         .ok_or(AppError::NotFound("custodial wallet not found"))?;
 
     Ok(Json(SigningMaterial {
+        id: secret.id,
         user_id: secret.user_id,
         stx_address: secret.stx_address,
         public_key: secret.public_key,
@@ -245,4 +251,43 @@ async fn get_signing_material(
         kms_key_version: secret.kms_key_version,
         usdcx_contract: USDCX_CONTRACT.to_owned(),
     }))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateEncryptionBody {
+    encrypted_mnemonic: String,
+    kms_key_version: String,
+}
+
+async fn update_custodial_encryption(
+    State(state): State<AppState>,
+    _secret: InternalSecret,
+    Path(user_id): Path<Uuid>,
+    Json(body): Json<UpdateEncryptionBody>,
+) -> AppResult<Json<serde_json::Value>> {
+    if body.encrypted_mnemonic.trim().is_empty() || body.kms_key_version.trim().is_empty()
+    {
+        return Err(AppError::BadRequest(
+            "encryption fields must be non-empty".into(),
+        ));
+    }
+    if !kms_key_uses_aad(&body.kms_key_version) {
+        return Err(AppError::BadRequest(
+            "encryption updates must use KMS key version 2+".into(),
+        ));
+    }
+
+    let updated = PgUserRepo::new(state.db.clone())
+        .update_custodial_wallet_encryption(
+            UserId::from(user_id),
+            body.encrypted_mnemonic.trim(),
+            body.kms_key_version.trim(),
+        )
+        .await?;
+    if !updated {
+        return Err(AppError::NotFound("custodial wallet not found"));
+    }
+
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
