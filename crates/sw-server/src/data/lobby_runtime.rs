@@ -1,5 +1,5 @@
-use redis::aio::ConnectionManager;
 use redis::AsyncCommands;
+use redis::aio::ConnectionManager;
 use sw_domain::{LobbyId, LobbyState, PlayerState, UserId};
 
 use crate::error::{AppError, AppResult};
@@ -9,11 +9,7 @@ fn lobby_state_key(lobby_id: LobbyId) -> String {
 }
 
 fn player_key(lobby_id: LobbyId, user_id: UserId) -> String {
-    format!(
-        "lobby:{}:player:{}",
-        lobby_id.as_uuid(),
-        user_id.as_uuid()
-    )
+    format!("lobby:{}:player:{}", lobby_id.as_uuid(), user_id.as_uuid())
 }
 
 fn players_set_key(lobby_id: LobbyId) -> String {
@@ -32,8 +28,7 @@ impl LobbyStateRepo {
     pub async fn set(&self, state: &LobbyState) -> AppResult<()> {
         let mut redis = self.redis.clone();
         let key = lobby_state_key(state.lobby_id);
-        let payload =
-            serde_json::to_string(state).map_err(|e| AppError::Internal(e.into()))?;
+        let payload = serde_json::to_string(state).map_err(|e| AppError::Internal(e.into()))?;
         redis
             .set::<_, _, ()>(key, payload)
             .await
@@ -80,8 +75,7 @@ impl PlayerStateRepo {
         let mut redis = self.redis.clone();
         let key = player_key(lobby_id, player.user_id);
         let set_key = players_set_key(lobby_id);
-        let payload =
-            serde_json::to_string(player).map_err(|e| AppError::Internal(e.into()))?;
+        let payload = serde_json::to_string(player).map_err(|e| AppError::Internal(e.into()))?;
         redis
             .set::<_, _, ()>(key, payload)
             .await

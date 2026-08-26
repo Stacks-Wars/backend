@@ -17,7 +17,7 @@ authors = ["Stacks Wars"]
 repository = "https://github.com/stacks-wars/backend"
 
 [workspace.dependencies]
-sw-domain = "1.0.1"
+sw-domain = "1.0.2"
 sw-plugin = "1.0.1"
 sw_checkers = "1.0.1"
 sw_lexi_wars = "1.0.0"

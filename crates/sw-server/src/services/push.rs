@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tracing::{debug, warn};
 use uuid::Uuid;
 use web_push::{
@@ -12,7 +12,7 @@ use web_push::{
 
 use crate::config::Config;
 use crate::data::push::{PushSubscription, PushSubscriptionRepo};
-use sw_domain::UserId;
+use sw_domain::{ChainId, UserId};
 
 #[derive(Clone)]
 pub struct PushService {
@@ -104,12 +104,15 @@ impl PushService {
         lobby_name: &str,
         lobby_path: &str,
         game_id: &str,
+        chain: ChainId,
+        entry_amount_micro: i64,
     ) {
         let Some(inner) = self.inner.clone() else {
             return;
         };
+        let paid_chain = (entry_amount_micro > 0).then_some(chain);
         let Ok(subs) = PushSubscriptionRepo::new(db.clone())
-            .list_lobby_alert_targets(creator_id)
+            .list_lobby_alert_targets(creator_id, paid_chain)
             .await
         else {
             return;
@@ -130,12 +133,20 @@ impl PushService {
     }
 
     /// Retract the lobby.created OS banner once the lobby is gone or finished.
-    pub async fn close_lobby(&self, db: sqlx::PgPool, creator_id: UserId, lobby_path: &str) {
+    pub async fn close_lobby(
+        &self,
+        db: sqlx::PgPool,
+        creator_id: UserId,
+        lobby_path: &str,
+        chain: ChainId,
+        entry_amount_micro: i64,
+    ) {
         let Some(inner) = self.inner.clone() else {
             return;
         };
+        let paid_chain = (entry_amount_micro > 0).then_some(chain);
         let Ok(subs) = PushSubscriptionRepo::new(db.clone())
-            .list_lobby_alert_targets(creator_id)
+            .list_lobby_alert_targets(creator_id, paid_chain)
             .await
         else {
             return;
@@ -190,10 +201,20 @@ pub fn spawn_lobby_created(
     lobby_name: String,
     lobby_path: String,
     game_id: String,
+    chain: ChainId,
+    entry_amount_micro: i64,
 ) {
     tokio::spawn(async move {
-        push.send_lobby_created(db, creator_id, &lobby_name, &lobby_path, &game_id)
-            .await;
+        push.send_lobby_created(
+            db,
+            creator_id,
+            &lobby_name,
+            &lobby_path,
+            &game_id,
+            chain,
+            entry_amount_micro,
+        )
+        .await;
     });
 }
 
@@ -202,9 +223,12 @@ pub fn spawn_lobby_close(
     db: sqlx::PgPool,
     creator_id: UserId,
     lobby_path: String,
+    chain: ChainId,
+    entry_amount_micro: i64,
 ) {
     tokio::spawn(async move {
-        push.close_lobby(db, creator_id, &lobby_path).await;
+        push.close_lobby(db, creator_id, &lobby_path, chain, entry_amount_micro)
+            .await;
     });
 }
 

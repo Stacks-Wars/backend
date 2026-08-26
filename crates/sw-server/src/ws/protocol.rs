@@ -1,9 +1,21 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sw_domain::ChainId;
 use uuid::Uuid;
 
 /// Public app-wide topic — every connection is auto-subscribed on connect.
+/// Cross-chain events live here: game activity, leaderboard, match ticker.
+/// Lobby browser deltas go to [`chain_feed_topic`] instead.
 pub const APP_TOPIC: &str = "app";
+
+/// Paid/sponsored lobby list deltas for one settlement chain (`app:stacks`).
+pub fn chain_feed_topic(chain: ChainId) -> String {
+    format!("app:{}", chain.as_str())
+}
+
+pub fn parse_chain_feed_topic(topic: &str) -> Option<ChainId> {
+    topic.strip_prefix("app:").and_then(|s| s.parse().ok())
+}
 
 /// Soft cap on topics per connection to limit abuse.
 pub const MAX_TOPICS_PER_CONNECTION: usize = 32;
@@ -18,9 +30,15 @@ pub struct Envelope {
 /// Parsed client control messages for this phase.
 #[derive(Debug, Clone)]
 pub enum ClientMessage {
-    Auth { token: String },
-    Subscribe { topic: String },
-    Unsubscribe { topic: String },
+    Auth {
+        token: String,
+    },
+    Subscribe {
+        topic: String,
+    },
+    Unsubscribe {
+        topic: String,
+    },
     Ping,
     GameAction {
         lobby_id: Uuid,
@@ -40,7 +58,9 @@ pub enum ClientMessage {
         body: String,
     },
     /// Forward-compatible: ignore without error.
-    Unknown { kind: String },
+    Unknown {
+        kind: String,
+    },
 }
 
 impl ClientMessage {

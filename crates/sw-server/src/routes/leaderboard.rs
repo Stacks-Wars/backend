@@ -45,10 +45,7 @@ struct LeaderboardResponse {
     offset: i64,
 }
 
-async fn resolve_season_id(
-    state: &AppState,
-    season_id: Option<i32>,
-) -> AppResult<SeasonId> {
+async fn resolve_season_id(state: &AppState, season_id: Option<i32>) -> AppResult<SeasonId> {
     if let Some(id) = season_id {
         return Ok(SeasonId(id));
     }
@@ -75,9 +72,7 @@ async fn fetch_leaderboard(
             .leaderboard_by_game(season_id, &game_id, limit, offset)
             .await?
     } else {
-        stats
-            .leaderboard_overall(season_id, limit, offset)
-            .await?
+        stats.leaderboard_overall(season_id, limit, offset).await?
     };
 
     Ok(LeaderboardResponse {
@@ -93,14 +88,8 @@ async fn leaderboard(
     Query(query): Query<LeaderboardQuery>,
 ) -> AppResult<Json<LeaderboardResponse>> {
     let season_id = resolve_season_id(&state, query.season_id).await?;
-    let page = fetch_leaderboard(
-        &state,
-        season_id,
-        query.game_id,
-        query.limit,
-        query.offset,
-    )
-    .await?;
+    let page =
+        fetch_leaderboard(&state, season_id, query.game_id, query.limit, query.offset).await?;
     Ok(Json(page))
 }
 

@@ -130,7 +130,9 @@ impl PgMatchRepo {
             .map_err(|e| AppError::Internal(e.into()))?;
         }
 
-        tx.commit().await.map_err(|e| AppError::Internal(e.into()))?;
+        tx.commit()
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?;
         Ok(())
     }
 
@@ -227,11 +229,7 @@ impl PgMatchRepo {
     }
 
     /// Platform-wide recent results, optionally scoped to one game.
-    pub async fn recent(
-        &self,
-        game_id: Option<&str>,
-        limit: i64,
-    ) -> AppResult<Vec<RecentMatch>> {
+    pub async fn recent(&self, game_id: Option<&str>, limit: i64) -> AppResult<Vec<RecentMatch>> {
         let rows = sqlx::query_as::<_, RecentMatchRow>(
             r#"
             SELECT m.id AS match_id, m.lobby_path, m.game_id, m.pot_micro,

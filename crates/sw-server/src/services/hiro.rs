@@ -1,7 +1,7 @@
 //! Hiro / Stacks API helpers — balance, activity, call-read, tx status.
 
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sw_domain::{ChainActivityItem, ChainActivityKind};
 
 use crate::error::{AppError, AppResult};
@@ -45,10 +45,7 @@ impl HiroClient {
 
     /// USDCx fungible token balance for an address (micro-units).
     pub async fn get_ft_balance(&self, address: &str) -> AppResult<i64> {
-        let url = format!(
-            "{}/extended/v1/address/{address}/balances",
-            self.base_url
-        );
+        let url = format!("{}/extended/v1/address/{address}/balances", self.base_url);
         let resp = self
             .apply_key(self.http.get(&url))
             .send()
@@ -144,9 +141,7 @@ impl HiroClient {
                 "hiro call-read failed: {text}"
             )));
         }
-        resp.json()
-            .await
-            .map_err(|e| AppError::Internal(e.into()))
+        resp.json().await.map_err(|e| AppError::Internal(e.into()))
     }
 
     /// Activity for a custodial address (FT transfers + vault contract calls).
@@ -224,11 +219,8 @@ impl HiroClient {
                             "kick" => ChainActivityKind::VaultKick,
                             _ => ChainActivityKind::Other,
                         };
-                        let amount = ft_amount_involving(
-                            &item.ft_transfers,
-                            address,
-                            &self.usdcx_asset,
-                        );
+                        let amount =
+                            ft_amount_involving(&item.ft_transfers, address, &self.usdcx_asset);
                         out.push(ChainActivityItem {
                             txid: txid.clone(),
                             kind,
@@ -318,11 +310,7 @@ fn split_contract_id(id: &str) -> AppResult<(&str, &str)> {
     Ok((a, b))
 }
 
-fn ft_amount_involving(
-    transfers: &Option<Vec<FtTransfer>>,
-    address: &str,
-    asset: &str,
-) -> i64 {
+fn ft_amount_involving(transfers: &Option<Vec<FtTransfer>>, address: &str, asset: &str) -> i64 {
     transfers
         .as_ref()
         .map(|v| {

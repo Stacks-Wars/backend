@@ -82,7 +82,9 @@ async fn get_game_activity(
 ) -> AppResult<Json<GameActivityResponse>> {
     let mut activity = activity_map(&state).await?;
     Ok(Json(
-        activity.remove(&game_id).unwrap_or_else(|| zeroed(&game_id)),
+        activity
+            .remove(&game_id)
+            .unwrap_or_else(|| zeroed(&game_id)),
     ))
 }
 

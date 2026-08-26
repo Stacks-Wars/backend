@@ -2,14 +2,14 @@
 
 use std::net::SocketAddr;
 
+use axum::Json;
 use axum::extract::{ConnectInfo, FromRequestParts, Request, State};
 use axum::http::request::Parts;
-use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
-use redis::aio::ConnectionManager;
 use redis::AsyncCommands;
+use redis::aio::ConnectionManager;
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -94,7 +94,11 @@ pub async fn check(
         Ok(t) => t,
         Err(_) => WINDOW_SECS,
     };
-    let reset_secs = if ttl < 0 { WINDOW_SECS as u64 } else { ttl as u64 };
+    let reset_secs = if ttl < 0 {
+        WINDOW_SECS as u64
+    } else {
+        ttl as u64
+    };
     let count_u = count.max(0) as u64;
     let allowed = count_u <= limit;
     let remaining = if allowed {
@@ -242,27 +246,15 @@ async fn enforce(policy: RatePolicy, state: AppState, req: Request, next: Next) 
     res
 }
 
-pub async fn global_limit(
-    State(state): State<AppState>,
-    req: Request,
-    next: Next,
-) -> Response {
+pub async fn global_limit(State(state): State<AppState>, req: Request, next: Next) -> Response {
     enforce(GLOBAL, state, req, next).await
 }
 
-pub async fn write_limit(
-    State(state): State<AppState>,
-    req: Request,
-    next: Next,
-) -> Response {
+pub async fn write_limit(State(state): State<AppState>, req: Request, next: Next) -> Response {
     enforce(WRITE, state, req, next).await
 }
 
-pub async fn sensitive_limit(
-    State(state): State<AppState>,
-    req: Request,
-    next: Next,
-) -> Response {
+pub async fn sensitive_limit(State(state): State<AppState>, req: Request, next: Next) -> Response {
     enforce(SENSITIVE, state, req, next).await
 }
 
@@ -302,11 +294,11 @@ mod tests {
     use std::net::IpAddr;
     use std::sync::Arc;
 
+    use axum::Router;
     use axum::body::Body;
     use axum::http::{Request as HttpRequest, StatusCode};
-    use axum::routing::{get, post};
-    use axum::Router;
     use axum::middleware;
+    use axum::routing::{get, post};
     use http_body_util::BodyExt;
     use redis::AsyncCommands;
     use sw_plugin::GameRegistry;
@@ -358,8 +350,8 @@ mod tests {
     }
 
     async fn test_state() -> AppState {
-        let redis_url = std::env::var("REDIS_URL")
-            .unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
+        let redis_url =
+            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
         let redis = redis_client::connect(&redis_url)
             .await
             .expect("redis required for rate_limit tests");
@@ -388,6 +380,10 @@ mod tests {
             vapid_public_key: None,
             vapid_private_key: None,
             vapid_subject: "mailto:contact@mail.stackswars.com".into(),
+            solana_rpc_url: "https://api.devnet.solana.com".into(),
+            solana_usdc_mint: "2ztYALhLWs2Lg1bGRBje82RgiLhuH4ZbCimRWVeyxUaB".into(),
+            solana_vault_program_id: "8NZHj9VH9JkqiAg19CK43ZLuK5hn5jXPBnLfbeKonqfy".into(),
+            solana_platform_wallet: String::new(),
         };
         AppState::new(config, db, redis, Arc::new(GameRegistry::new()))
     }

@@ -8,8 +8,8 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::data::join_requests::JoinRequestRepo;
-use crate::data::lobby_runtime::{LobbyStateRepo, PlayerStateRepo};
 use crate::data::lobbies::PgLobbyRepo;
+use crate::data::lobby_runtime::{LobbyStateRepo, PlayerStateRepo};
 use crate::data::users::PgUserRepo;
 use crate::error::{AppError, AppResult};
 use crate::services::realtime::{self, LobbyFeedKind};
@@ -21,7 +21,7 @@ pub const LOBBY_TTL: Duration = Duration::hours(24);
 #[serde(rename_all = "camelCase")]
 pub struct StaleSeat {
     pub user_id: Uuid,
-    pub stx_address: String,
+    pub address: String,
     pub paid_micro: i64,
     pub is_creator: bool,
 }
@@ -44,7 +44,9 @@ pub async fn list_stale_waiting(state: &AppState) -> AppResult<Vec<StaleLobby>> 
     for lobby in lobbies {
         let mut seats = Vec::with_capacity(lobby.participants.len());
         for user_id in &lobby.participants {
-            let wallet = users.get_custodial_wallet(*user_id).await?;
+            let wallet = users
+                .get_custodial_wallet(*user_id, lobby.chain.as_str())
+                .await?;
             let Some(wallet) = wallet else {
                 warn!(%user_id, path = %lobby.path, "stale lobby seat missing custodial wallet");
                 continue;
@@ -58,7 +60,7 @@ pub async fn list_stale_waiting(state: &AppState) -> AppResult<Vec<StaleLobby>> 
             };
             seats.push(StaleSeat {
                 user_id: user_id.as_uuid(),
-                stx_address: wallet.stx_address,
+                address: wallet.address,
                 paid_micro,
                 is_creator: *user_id == lobby.creator_id,
             });
@@ -77,9 +79,7 @@ pub async fn expire_lobby(state: &AppState, lobby_id: LobbyId) -> AppResult<Lobb
         .ok_or(AppError::NotFound("lobby not found"))?;
 
     if lobby.status != LobbyStatus::Waiting {
-        return Err(AppError::Conflict(
-            "only waiting lobbies can expire".into(),
-        ));
+        return Err(AppError::Conflict("only waiting lobbies can expire".into()));
     }
 
     let players = PlayerStateRepo::new(state.redis.clone());
@@ -103,6 +103,8 @@ pub async fn expire_lobby(state: &AppState, lobby_id: LobbyId) -> AppResult<Lobb
         state.db.clone(),
         lobby.creator_id,
         lobby.path.clone(),
+        lobby.chain,
+        lobby.entry_amount_micro,
     );
 
     info!(

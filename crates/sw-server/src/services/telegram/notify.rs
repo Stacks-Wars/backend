@@ -6,8 +6,8 @@ use sw_domain::{Lobby, LobbyId, UserId};
 use sw_plugin::MatchResult;
 use tracing::{info, warn};
 
-use crate::data::lobby_runtime::PlayerStateRepo;
 use crate::data::lobbies::PgLobbyRepo;
+use crate::data::lobby_runtime::PlayerStateRepo;
 use crate::data::seasons::{PgSeasonRepo, SeasonRepo};
 use crate::data::stats::PgStatsRepo;
 use crate::data::telegram::TelegramMsgRepo;
@@ -127,11 +127,7 @@ impl TelegramNotifier {
         });
     }
 
-    pub async fn reply_leaderboard(
-        &self,
-        state: &AppState,
-        chat_id: i64,
-    ) -> anyhow::Result<()> {
+    pub async fn reply_leaderboard(&self, state: &AppState, chat_id: i64) -> anyhow::Result<()> {
         let client = self
             .client
             .as_ref()
@@ -302,9 +298,7 @@ impl TelegramNotifier {
         // If Redis players are gone, fall back to rankings order.
         if standings.is_empty() {
             for (idx, id) in result.rankings.iter().enumerate() {
-                let name = if let Ok(Some(u)) =
-                    PgUserRepo::new(db.clone()).get_by_id(*id).await
-                {
+                let name = if let Ok(Some(u)) = PgUserRepo::new(db.clone()).get_by_id(*id).await {
                     format::public_name(u.display_name.as_deref(), u.username.as_deref())
                 } else {
                     "Player".into()
@@ -323,12 +317,7 @@ impl TelegramNotifier {
         }
 
         let room_url = self.room_url(&lobby.path);
-        let text = format::lobby_finished_html(
-            &lobby.name,
-            &game_name,
-            pot_micro,
-            &standings,
-        );
+        let text = format::lobby_finished_html(&lobby.name, &game_name, pot_micro, &standings);
 
         match client
             .send_message(

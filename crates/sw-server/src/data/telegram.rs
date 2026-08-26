@@ -1,7 +1,7 @@
 //! Redis store for Telegram message ids + notification idempotency flags.
 
-use redis::aio::ConnectionManager;
 use redis::AsyncCommands;
+use redis::aio::ConnectionManager;
 use serde::{Deserialize, Serialize};
 use sw_domain::LobbyId;
 
@@ -38,8 +38,7 @@ impl TelegramMsgRepo {
             .map_err(|e| AppError::Internal(e.into()))?;
         match raw {
             Some(raw) => {
-                let value = serde_json::from_str(&raw)
-                    .map_err(|e| AppError::Internal(e.into()))?;
+                let value = serde_json::from_str(&raw).map_err(|e| AppError::Internal(e.into()))?;
                 Ok(Some(value))
             }
             None => Ok(None),
@@ -54,8 +53,7 @@ impl TelegramMsgRepo {
             message_id: 0,
             finished_notified: false,
         };
-        let raw = serde_json::to_string(&placeholder)
-            .map_err(|e| AppError::Internal(e.into()))?;
+        let raw = serde_json::to_string(&placeholder).map_err(|e| AppError::Internal(e.into()))?;
         let set: bool = redis
             .set_nx(key(lobby_id), raw)
             .await
@@ -72,8 +70,7 @@ impl TelegramMsgRepo {
             message_id,
             finished_notified: false,
         };
-        let raw =
-            serde_json::to_string(&value).map_err(|e| AppError::Internal(e.into()))?;
+        let raw = serde_json::to_string(&value).map_err(|e| AppError::Internal(e.into()))?;
         redis
             .set_ex::<_, _, ()>(key(lobby_id), raw, TTL_SECS as u64)
             .await
@@ -87,8 +84,7 @@ impl TelegramMsgRepo {
             message_id,
             finished_notified: true,
         };
-        let raw =
-            serde_json::to_string(&value).map_err(|e| AppError::Internal(e.into()))?;
+        let raw = serde_json::to_string(&value).map_err(|e| AppError::Internal(e.into()))?;
         redis
             .set_ex::<_, _, ()>(key(lobby_id), raw, TTL_SECS as u64)
             .await
@@ -106,8 +102,7 @@ impl TelegramMsgRepo {
         let _: Result<(), _> = redis.del(&k).await;
         match raw {
             Some(raw) => {
-                let value = serde_json::from_str(&raw)
-                    .map_err(|e| AppError::Internal(e.into()))?;
+                let value = serde_json::from_str(&raw).map_err(|e| AppError::Internal(e.into()))?;
                 Ok(Some(value))
             }
             None => Ok(None),

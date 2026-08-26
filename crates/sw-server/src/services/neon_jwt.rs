@@ -3,9 +3,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use jsonwebtoken::{
-    decode, decode_header, Algorithm, DecodingKey, Validation,
-};
+use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
 use parking_lot::RwLock;
 use serde::Deserialize;
 use serde_json::Value;
@@ -58,9 +56,7 @@ fn auth_origin(base_url: &str) -> AppResult<String> {
         .split('/')
         .next()
         .filter(|h| !h.is_empty())
-        .ok_or_else(|| {
-            AppError::Internal(anyhow::anyhow!("NEON_AUTH_BASE_URL missing host"))
-        })?;
+        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("NEON_AUTH_BASE_URL missing host")))?;
     Ok(format!("{scheme}://{host}"))
 }
 
@@ -112,8 +108,8 @@ impl NeonJwtVerifier {
             return Err(AppError::Unauthorized("missing bearer token"));
         }
 
-        let header = decode_header(token)
-            .map_err(|_| AppError::Unauthorized("invalid token header"))?;
+        let header =
+            decode_header(token).map_err(|_| AppError::Unauthorized("invalid token header"))?;
         if header.alg != Algorithm::EdDSA {
             return Err(AppError::Unauthorized("unsupported token algorithm"));
         }
@@ -184,10 +180,7 @@ impl NeonJwtVerifier {
                 res.status()
             )));
         }
-        let body: Value = res
-            .json()
-            .await
-            .map_err(|e| AppError::Internal(e.into()))?;
+        let body: Value = res.json().await.map_err(|e| AppError::Internal(e.into()))?;
         let keys_json = body
             .get("keys")
             .and_then(|v| v.as_array())
@@ -241,11 +234,9 @@ pub fn parse_neon_sub(sub: &str) -> AppResult<Uuid> {
 
 pub fn bearer_token_from_header(value: Option<&str>) -> Option<&str> {
     let value = value?.trim();
-    let rest = value.strip_prefix("Bearer ").or_else(|| value.strip_prefix("bearer "))?;
+    let rest = value
+        .strip_prefix("Bearer ")
+        .or_else(|| value.strip_prefix("bearer "))?;
     let token = rest.trim();
-    if token.is_empty() {
-        None
-    } else {
-        Some(token)
-    }
+    if token.is_empty() { None } else { Some(token) }
 }

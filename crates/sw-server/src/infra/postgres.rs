@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
+use sqlx::postgres::PgPoolOptions;
 use tracing::info;
 
 fn migrations_dir() -> PathBuf {

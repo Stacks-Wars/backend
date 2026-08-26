@@ -7,9 +7,9 @@ mod seasons;
 mod users;
 mod wallet;
 
+use axum::Router;
 use axum::middleware;
 use axum::routing::get;
-use axum::Router;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 

@@ -1,6 +1,6 @@
 use chrono::Utc;
-use redis::aio::ConnectionManager;
 use redis::AsyncCommands;
+use redis::aio::ConnectionManager;
 use serde::{Deserialize, Serialize};
 use sw_domain::{JoinRequestState, LobbyId, UserId};
 
@@ -44,8 +44,7 @@ impl JoinRequestRepo {
     pub async fn upsert(&self, lobby_id: LobbyId, request: &JoinRequest) -> AppResult<()> {
         let mut redis = self.redis.clone();
         let key = join_requests_key(lobby_id);
-        let payload =
-            serde_json::to_string(request).map_err(|e| AppError::Internal(e.into()))?;
+        let payload = serde_json::to_string(request).map_err(|e| AppError::Internal(e.into()))?;
         redis
             .hset::<_, _, _, ()>(&key, request.user_id.as_uuid().to_string(), payload)
             .await
@@ -106,8 +105,7 @@ impl JoinRequestRepo {
         let mut request: JoinRequest =
             serde_json::from_str(&raw).map_err(|e| AppError::Internal(e.into()))?;
         request.state = state;
-        let payload =
-            serde_json::to_string(&request).map_err(|e| AppError::Internal(e.into()))?;
+        let payload = serde_json::to_string(&request).map_err(|e| AppError::Internal(e.into()))?;
         redis
             .hset::<_, _, _, ()>(&key, field, payload)
             .await

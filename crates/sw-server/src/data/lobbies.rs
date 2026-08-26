@@ -14,6 +14,7 @@ struct LobbyRow {
     description: Option<String>,
     game_id: String,
     creator_id: Uuid,
+    chain: String,
     entry_amount_micro: i64,
     pot_micro: i64,
     is_private: bool,
@@ -33,6 +34,7 @@ impl LobbyRow {
             description: self.description,
             game_id: GameId::new(self.game_id).map_err(|e| AppError::BadRequest(e.to_string()))?,
             creator_id: UserId::from(self.creator_id),
+            chain: self.chain.parse().unwrap_or_default(),
             entry_amount_micro: self.entry_amount_micro,
             pot_micro: self.pot_micro,
             is_private: self.is_private,
@@ -56,6 +58,7 @@ pub struct LobbyQuery {
     pub min_players: Option<i32>,
     pub max_players: Option<i32>,
     pub is_private: Option<bool>,
+    pub chain: Option<String>,
     pub limit: i64,
     pub offset: i64,
 }
@@ -70,6 +73,7 @@ impl Default for LobbyQuery {
             min_players: None,
             max_players: None,
             is_private: None,
+            chain: None,
             limit: 60,
             offset: 0,
         }
@@ -105,25 +109,22 @@ impl PgLobbyRepo {
     }
 
     pub async fn insert(&self, lobby: &Lobby) -> AppResult<()> {
-        let participant_uuids: Vec<Uuid> = lobby
-            .participants
-            .iter()
-            .map(|id| id.as_uuid())
-            .collect();
+        let participant_uuids: Vec<Uuid> =
+            lobby.participants.iter().map(|id| id.as_uuid()).collect();
         let status = DbLobbyStatus::from(lobby.status);
 
         sqlx::query(
             r#"
             INSERT INTO lobbies (
-                id, path, name, description, game_id, creator_id,
+                id, path, name, description, game_id, creator_id, chain,
                 entry_amount_micro, pot_micro,
                 is_private, is_sponsored, status, participants,
                 created_at, updated_at
             ) VALUES (
-                $1, $2, $3, $4, $5, $6,
-                $7, $8,
-                $9, $10, $11, $12,
-                $13, $14
+                $1, $2, $3, $4, $5, $6, $7::chain_id,
+                $8, $9,
+                $10, $11, $12, $13,
+                $14, $15
             )
             "#,
         )
@@ -133,6 +134,7 @@ impl PgLobbyRepo {
         .bind(&lobby.description)
         .bind(lobby.game_id.as_str())
         .bind(lobby.creator_id.as_uuid())
+        .bind(lobby.chain.as_str())
         .bind(lobby.entry_amount_micro)
         .bind(lobby.pot_micro)
         .bind(lobby.is_private)
@@ -151,7 +153,7 @@ impl PgLobbyRepo {
     pub async fn get_by_path(&self, path: &str) -> AppResult<Option<Lobby>> {
         let row = sqlx::query_as::<_, LobbyRow>(
             r#"
-            SELECT id, path, name, description, game_id, creator_id,
+            SELECT id, path, name, description, game_id, creator_id, chain::text AS chain,
                    entry_amount_micro, pot_micro,
                    is_private, is_sponsored, status, participants,
                    created_at, updated_at
@@ -170,7 +172,7 @@ impl PgLobbyRepo {
     pub async fn get_by_id(&self, id: LobbyId) -> AppResult<Option<Lobby>> {
         let row = sqlx::query_as::<_, LobbyRow>(
             r#"
-            SELECT id, path, name, description, game_id, creator_id,
+            SELECT id, path, name, description, game_id, creator_id, chain::text AS chain,
                    entry_amount_micro, pot_micro,
                    is_private, is_sponsored, status, participants,
                    created_at, updated_at
@@ -189,7 +191,7 @@ impl PgLobbyRepo {
     pub async fn list_open(&self, limit: i64, offset: i64) -> AppResult<Vec<Lobby>> {
         let rows = sqlx::query_as::<_, LobbyRow>(
             r#"
-            SELECT id, path, name, description, game_id, creator_id,
+            SELECT id, path, name, description, game_id, creator_id, chain::text AS chain,
                    entry_amount_micro, pot_micro,
                    is_private, is_sponsored, status, participants,
                    created_at, updated_at
@@ -217,7 +219,7 @@ impl PgLobbyRepo {
 
         let rows = sqlx::query_as::<_, LobbyRow>(
             r#"
-            SELECT id, path, name, description, game_id, creator_id,
+            SELECT id, path, name, description, game_id, creator_id, chain::text AS chain,
                    entry_amount_micro, pot_micro,
                    is_private, is_sponsored, status, participants,
                    created_at, updated_at
@@ -231,6 +233,11 @@ impl PgLobbyRepo {
                    OR ($5 = FALSE AND entry_amount_micro = 0))
               AND ($6::INT IS NULL OR cardinality(participants) >= $6)
               AND ($7::INT IS NULL OR cardinality(participants) <= $7)
+              -- Paid/sponsored lobbies stay on their settlement chain.
+              -- Free lobbies (entry 0) never hit a wallet, so they list everywhere.
+              AND ($10::TEXT IS NULL
+                   OR entry_amount_micro = 0
+                   OR chain::text = $10)
             ORDER BY
                 CASE status
                     WHEN 'waiting' THEN 0
@@ -251,6 +258,7 @@ impl PgLobbyRepo {
         .bind(query.max_players)
         .bind(query.limit)
         .bind(query.offset)
+        .bind(query.chain.as_deref())
         .fetch_all(&self.pool)
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
@@ -290,14 +298,10 @@ impl PgLobbyRepo {
     }
 
     /// Lobbies a user has taken part in, newest first.
-    pub async fn list_for_participant(
-        &self,
-        user_id: UserId,
-        limit: i64,
-    ) -> AppResult<Vec<Lobby>> {
+    pub async fn list_for_participant(&self, user_id: UserId, limit: i64) -> AppResult<Vec<Lobby>> {
         let rows = sqlx::query_as::<_, LobbyRow>(
             r#"
-            SELECT id, path, name, description, game_id, creator_id,
+            SELECT id, path, name, description, game_id, creator_id, chain::text AS chain,
                    entry_amount_micro, pot_micro,
                    is_private, is_sponsored, status, participants,
                    created_at, updated_at
@@ -317,13 +321,12 @@ impl PgLobbyRepo {
     }
 
     pub async fn path_exists(&self, path: &str) -> AppResult<bool> {
-        let exists: bool = sqlx::query_scalar(
-            r#"SELECT EXISTS(SELECT 1 FROM lobbies WHERE path = $1)"#,
-        )
-        .bind(path)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+        let exists: bool =
+            sqlx::query_scalar(r#"SELECT EXISTS(SELECT 1 FROM lobbies WHERE path = $1)"#)
+                .bind(path)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| AppError::Internal(e.into()))?;
         Ok(exists)
     }
 
@@ -394,13 +397,10 @@ impl PgLobbyRepo {
     }
 
     /// Waiting lobbies created before `cutoff` (used by the 24h TTL janitor).
-    pub async fn list_waiting_older_than(
-        &self,
-        cutoff: DateTime<Utc>,
-    ) -> AppResult<Vec<Lobby>> {
+    pub async fn list_waiting_older_than(&self, cutoff: DateTime<Utc>) -> AppResult<Vec<Lobby>> {
         let rows = sqlx::query_as::<_, LobbyRow>(
             r#"
-            SELECT id, path, name, description, game_id, creator_id,
+            SELECT id, path, name, description, game_id, creator_id, chain::text AS chain,
                    entry_amount_micro, pot_micro,
                    is_private, is_sponsored, status, participants,
                    created_at, updated_at
@@ -448,7 +448,7 @@ impl PgLobbyRepo {
     pub async fn list_waiting_created_by(&self, user_id: UserId) -> AppResult<Vec<Lobby>> {
         let rows = sqlx::query_as::<_, LobbyRow>(
             r#"
-            SELECT id, path, name, description, game_id, creator_id,
+            SELECT id, path, name, description, game_id, creator_id, chain::text AS chain,
                    entry_amount_micro, pot_micro,
                    is_private, is_sponsored, status, participants,
                    created_at, updated_at

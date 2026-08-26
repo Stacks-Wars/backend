@@ -5,8 +5,7 @@ use crate::UserId;
 
 /// Platform user synced from Neon Auth.
 ///
-/// `wallet_address` is the user's personal Stacks address for receiving rewards
-/// (linked later). Server automation uses a separate `custodial_wallets` row.
+/// On-chain keys live in `custodial_wallets`, one row per chain.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct User {
@@ -15,8 +14,6 @@ pub struct User {
     pub display_name: Option<String>,
     pub email: String,
     pub email_verified_at: Option<DateTime<Utc>>,
-    pub wallet_address: Option<String>,
-    pub wallet_verified_at: Option<DateTime<Utc>>,
     pub avatar_url: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,

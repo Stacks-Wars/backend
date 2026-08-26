@@ -1,8 +1,8 @@
 //! Persisted `lobby.finished` payload so revisiting a finished room can show
 //! MatchResult without relying on the one-shot WebSocket event.
 
-use redis::aio::ConnectionManager;
 use redis::AsyncCommands;
+use redis::aio::ConnectionManager;
 use serde_json::Value;
 use sw_domain::LobbyId;
 
@@ -26,8 +26,7 @@ impl LobbyFinishedRepo {
 
     pub async fn set(&self, lobby_id: LobbyId, payload: &Value) -> AppResult<()> {
         let mut redis = self.redis.clone();
-        let raw =
-            serde_json::to_string(payload).map_err(|e| AppError::Internal(e.into()))?;
+        let raw = serde_json::to_string(payload).map_err(|e| AppError::Internal(e.into()))?;
         redis
             .set_ex::<_, _, ()>(key(lobby_id), raw, TTL_SECS as u64)
             .await
@@ -43,8 +42,7 @@ impl LobbyFinishedRepo {
             .map_err(|e| AppError::Internal(e.into()))?;
         match raw {
             Some(raw) => {
-                let value = serde_json::from_str(&raw)
-                    .map_err(|e| AppError::Internal(e.into()))?;
+                let value = serde_json::from_str(&raw).map_err(|e| AppError::Internal(e.into()))?;
                 Ok(Some(value))
             }
             None => Ok(None),

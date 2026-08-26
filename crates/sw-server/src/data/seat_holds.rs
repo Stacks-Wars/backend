@@ -1,8 +1,8 @@
 //! Short-lived seat reservations so concurrent joins can't overfill a lobby
 //! (e.g. checkers max 2) after both players have already paid on-chain.
 
-use redis::aio::ConnectionManager;
 use redis::AsyncCommands;
+use redis::aio::ConnectionManager;
 use sw_domain::{LobbyId, UserId};
 use uuid::Uuid;
 

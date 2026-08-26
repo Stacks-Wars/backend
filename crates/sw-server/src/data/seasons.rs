@@ -74,9 +74,7 @@ impl YearQuarter {
 fn normalize_name(name: &str) -> AppResult<String> {
     let name = name.trim().to_owned();
     if name.is_empty() || name.len() > 120 {
-        return Err(AppError::BadRequest(
-            "name must be 1–120 characters".into(),
-        ));
+        return Err(AppError::BadRequest("name must be 1–120 characters".into()));
     }
     Ok(name)
 }
@@ -278,9 +276,7 @@ impl SeasonRepo for PgSeasonRepo {
 
     async fn create(&self, input: CreateSeasonInput) -> AppResult<Season> {
         if input.ends_at <= input.starts_at {
-            return Err(AppError::BadRequest(
-                "endsAt must be after startsAt".into(),
-            ));
+            return Err(AppError::BadRequest("endsAt must be after startsAt".into()));
         }
         let name = normalize_name(&input.name)?;
         let description = normalize_description(input.description);
@@ -334,7 +330,13 @@ mod tests {
     #[test]
     fn quarter_of_july_is_q3() {
         let dt = Utc.with_ymd_and_hms(2026, 7, 28, 12, 0, 0).unwrap();
-        assert_eq!(YearQuarter::of(dt), YearQuarter { year: 2026, quarter: 3 });
+        assert_eq!(
+            YearQuarter::of(dt),
+            YearQuarter {
+                year: 2026,
+                quarter: 3
+            }
+        );
     }
 
     #[test]

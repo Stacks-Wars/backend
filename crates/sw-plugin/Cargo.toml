@@ -17,6 +17,6 @@ chrono = { workspace = true }
 parking_lot = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-sw-domain = "1.0.1"
+sw-domain = "1.0.2"
 thiserror = { workspace = true }
 uuid = { workspace = true }

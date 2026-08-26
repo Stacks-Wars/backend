@@ -143,10 +143,7 @@ pub fn lobby_cancelled_html(lobby_name: &str, game_name: &str) -> String {
     )
 }
 
-pub fn leaderboard_html(
-    season_label: &str,
-    rows: &[(u32, String, i64, i32, i32, i64)],
-) -> String {
+pub fn leaderboard_html(season_label: &str, rows: &[(u32, String, i64, i32, i32, i64)]) -> String {
     if rows.is_empty() {
         return format!(
             "🏆 <b>Leaderboard</b> · {}\n\nNo ranked players yet.",

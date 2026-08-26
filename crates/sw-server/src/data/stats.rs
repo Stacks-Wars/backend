@@ -1,5 +1,5 @@
 use sqlx::PgPool;
-use sw_domain::{usdcx_to_micro, GameId, LeaderboardEntry, SeasonId, UserId};
+use sw_domain::{GameId, LeaderboardEntry, SeasonId, UserId, usdcx_to_micro};
 use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};

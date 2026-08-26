@@ -1,16 +1,17 @@
 //! Realtime fan-out.
 //!
 //! Every WebSocket message the platform pushes outside of game engine events
-//! is built here so the wire shapes stay in one place. Three topics matter:
+//! is built here so the wire shapes stay in one place. Topics:
 //!
-//! - `app` — global feed: lobby list deltas, per-game activity, leaderboard.
+//! - `app` — cross-chain: per-game activity, leaderboard, match ticker.
+//! - `app:{chain}` — lobby list deltas for that chain (free events dual-publish).
 //! - `lobby:{id}` — one room: snapshot, state, presence, chat, game events.
 //! - `user:{id}` — private: wallet updates, per-player match results.
 
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sw_domain::{
-    Lobby, LobbyChatMessage, LobbyId, LobbyState, LobbyStatus, PlayerState, UserId,
+    ChainId, Lobby, LobbyChatMessage, LobbyId, LobbyState, LobbyStatus, PlayerState, UserId,
 };
 
 use crate::data::join_requests::{JoinRequest, JoinRequestRepo};
@@ -21,7 +22,7 @@ use crate::data::lobbies::{GameActivity, PgLobbyRepo};
 use crate::data::lobby_runtime::{LobbyStateRepo, PlayerStateRepo};
 use crate::error::AppResult;
 use crate::state::AppState;
-use crate::ws::{ConnectionId, ServerMessage, APP_TOPIC};
+use crate::ws::{APP_TOPIC, ConnectionId, ServerMessage, chain_feed_topic};
 
 pub fn lobby_topic(lobby_id: LobbyId) -> String {
     format!("lobby:{}", lobby_id.as_uuid())
@@ -37,6 +38,16 @@ pub fn parse_lobby_topic(topic: &str) -> Option<LobbyId> {
         .strip_prefix("lobby:")
         .and_then(|raw| Uuid::parse_str(raw).ok())
         .map(LobbyId::from)
+}
+
+/// Paid/sponsored events stay on one chain. Free lobbies never settle on-chain,
+/// so they are published to every chain feed.
+pub fn lobby_feed_topics_for(entry_amount_micro: i64, chain: ChainId) -> Vec<String> {
+    if entry_amount_micro <= 0 {
+        ChainId::ALL.iter().copied().map(chain_feed_topic).collect()
+    } else {
+        vec![chain_feed_topic(chain)]
+    }
 }
 
 /// Live game runtime attached to a lobby snapshot.
@@ -79,8 +90,12 @@ pub async fn build_lobby_snapshot(
     viewer: Option<UserId>,
 ) -> AppResult<LobbySnapshot> {
     let lobby_id = lobby.id;
-    let lobby_state = LobbyStateRepo::new(state.redis.clone()).get(lobby_id).await?;
-    let mut players = PlayerStateRepo::new(state.redis.clone()).list(lobby_id).await?;
+    let lobby_state = LobbyStateRepo::new(state.redis.clone())
+        .get(lobby_id)
+        .await?;
+    let mut players = PlayerStateRepo::new(state.redis.clone())
+        .list(lobby_id)
+        .await?;
     players.sort_by_key(|p| p.joined_at);
     let chat = LobbyChatRepo::new(state.redis.clone())
         .history(lobby_id)
@@ -124,17 +139,15 @@ async fn restore_finished_payload(
     lobby: &Lobby,
     players: &mut [PlayerState],
 ) -> AppResult<Option<Value>> {
-    if let Some(payload) =
-        crate::data::lobby_finished::LobbyFinishedRepo::new(state.redis.clone())
-            .get(lobby.id)
-            .await?
+    if let Some(payload) = crate::data::lobby_finished::LobbyFinishedRepo::new(state.redis.clone())
+        .get(lobby.id)
+        .await?
     {
         // Prefer match-history ranks when available; otherwise apply the
         // standings embedded in the finished payload (live-finish path).
-        if let Ok(Some((_, _, _, rows))) =
-            crate::data::matches::PgMatchRepo::new(state.db.clone())
-                .get_by_lobby(lobby.id)
-                .await
+        if let Ok(Some((_, _, _, rows))) = crate::data::matches::PgMatchRepo::new(state.db.clone())
+            .get_by_lobby(lobby.id)
+            .await
         {
             apply_match_player_outcomes(players, &rows);
         } else {
@@ -175,10 +188,7 @@ fn apply_match_player_outcomes(
     rows: &[(Uuid, Option<i32>, bool, i64, i64)],
 ) {
     for (user_id, rank, _is_winner, prize_micro, wars_point) in rows {
-        if let Some(player) = players
-            .iter_mut()
-            .find(|p| p.user_id.as_uuid() == *user_id)
-        {
+        if let Some(player) = players.iter_mut().find(|p| p.user_id.as_uuid() == *user_id) {
             player.rank = rank.map(|r| r as usize);
             player.prize_micro = Some(*prize_micro);
             player.wars_point = Some(*wars_point);
@@ -198,10 +208,7 @@ fn apply_finished_standings(players: &mut [PlayerState], payload: &Value) {
         else {
             continue;
         };
-        let Some(player) = players
-            .iter_mut()
-            .find(|p| p.user_id.as_uuid() == user_id)
-        else {
+        let Some(player) = players.iter_mut().find(|p| p.user_id.as_uuid() == user_id) else {
             continue;
         };
         if let Some(rank) = row.get("rank").and_then(|v| v.as_u64()) {
@@ -352,14 +359,15 @@ pub fn publish_lobby_feed(state: &AppState, kind: LobbyFeedKind, lobby: &Lobby) 
         _ => json!({ "lobby": lobby }),
     };
 
-    state.subscriptions.publish(
-        &state.sessions,
-        APP_TOPIC,
-        ServerMessage {
-            kind: kind.as_kind().into(),
-            payload,
-        },
-    );
+    let message = ServerMessage {
+        kind: kind.as_kind().into(),
+        payload,
+    };
+    for topic in lobby_feed_topics_for(lobby.entry_amount_micro, lobby.chain) {
+        state
+            .subscriptions
+            .publish(&state.sessions, &topic, message.clone());
+    }
 }
 
 /// Push a lobby to the global feed, choosing the delta kind from its status.
