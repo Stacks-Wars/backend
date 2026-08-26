@@ -5,8 +5,12 @@ use uuid::Uuid;
 
 /// Public app-wide topic — every connection is auto-subscribed on connect.
 /// Cross-chain events live here: game activity, leaderboard, match ticker.
-/// Lobby browser deltas go to [`chain_feed_topic`] instead.
+/// Lobby browser deltas go to [`chain_feed_topic`] / [`ALL_FEED_TOPIC`].
 pub const APP_TOPIC: &str = "app";
+
+/// Every lobby list delta (paid + free, every chain). Guests subscribe here
+/// so they see the full browser without enumerating `ChainId::ALL`.
+pub const ALL_FEED_TOPIC: &str = "app:all";
 
 /// Paid/sponsored lobby list deltas for one settlement chain (`app:stacks`).
 pub fn chain_feed_topic(chain: ChainId) -> String {

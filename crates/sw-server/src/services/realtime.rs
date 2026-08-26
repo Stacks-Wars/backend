@@ -5,6 +5,7 @@
 //!
 //! - `app` — cross-chain: per-game activity, leaderboard, match ticker.
 //! - `app:{chain}` — lobby list deltas for that chain (free events dual-publish).
+//! - `app:all` — every lobby list delta; guests subscribe so they see both chains.
 //! - `lobby:{id}` — one room: snapshot, state, presence, chat, game events.
 //! - `user:{id}` — private: wallet updates, per-player match results.
 
@@ -22,7 +23,7 @@ use crate::data::lobbies::{GameActivity, PgLobbyRepo};
 use crate::data::lobby_runtime::{LobbyStateRepo, PlayerStateRepo};
 use crate::error::AppResult;
 use crate::state::AppState;
-use crate::ws::{APP_TOPIC, ConnectionId, ServerMessage, chain_feed_topic};
+use crate::ws::{ALL_FEED_TOPIC, APP_TOPIC, ConnectionId, ServerMessage, chain_feed_topic};
 
 pub fn lobby_topic(lobby_id: LobbyId) -> String {
     format!("lobby:{}", lobby_id.as_uuid())
@@ -41,13 +42,16 @@ pub fn parse_lobby_topic(topic: &str) -> Option<LobbyId> {
 }
 
 /// Paid/sponsored events stay on one chain. Free lobbies never settle on-chain,
-/// so they are published to every chain feed.
+/// so they are published to every chain feed. `app:all` always gets a copy so
+/// guests (and a third chain later) do not have to subscribe to each `app:{chain}`.
 pub fn lobby_feed_topics_for(entry_amount_micro: i64, chain: ChainId) -> Vec<String> {
-    if entry_amount_micro <= 0 {
+    let mut topics: Vec<String> = if entry_amount_micro <= 0 {
         ChainId::ALL.iter().copied().map(chain_feed_topic).collect()
     } else {
         vec![chain_feed_topic(chain)]
-    }
+    };
+    topics.push(ALL_FEED_TOPIC.to_owned());
+    topics
 }
 
 /// Live game runtime attached to a lobby snapshot.

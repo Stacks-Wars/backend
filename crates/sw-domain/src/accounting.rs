@@ -1,4 +1,4 @@
-//! On-chain wallet DTOs (no ledger). Balance SoT is Hiro FT balance.
+//! On-chain wallet DTOs (no ledger). Balance SoT is each chain's official explorer / RPC.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

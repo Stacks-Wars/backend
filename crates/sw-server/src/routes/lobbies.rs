@@ -304,7 +304,12 @@ async fn list_lobbies(
             Some(false) => Some(false),
             _ => None,
         },
-        chain: Some(ChainId::from_optional(params.chain.as_deref()).to_string()),
+        chain: params
+            .chain
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| ChainId::from_optional(Some(s)).to_string()),
         limit: params.limit.unwrap_or(60).clamp(1, 200),
         offset: params.offset.unwrap_or(0).max(0),
     };

@@ -28,7 +28,7 @@ Game engines live in separate crates (crates.io `sw_*`), not inside `sw-server` 
 - Keep handler functions boring: extract, call a service, return JSON. Business rules go in `services/` or `data/`.
 - Logging is tracing with structured fields (`lobby_id`, `user_id`, `path`). Do not format those into the message string.
 - Schema changes are new files under `backend/migrations/`. Use the existing SQLx patterns. No second ORM.
-- Redis is seats, cache, and short-lived coordination. Hiro FT is the source of truth for balances.
+- Redis is seats, cache, and short-lived coordination. Individual official chain explorers are the source of truth for balances.
 
 ## WebSocket
 

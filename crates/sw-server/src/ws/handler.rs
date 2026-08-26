@@ -9,7 +9,9 @@ use futures::{SinkExt, StreamExt};
 use tracing::{debug, info};
 use uuid::Uuid;
 
-use super::protocol::{APP_TOPIC, ClientMessage, Envelope, ServerMessage, parse_chain_feed_topic};
+use super::protocol::{
+    ALL_FEED_TOPIC, APP_TOPIC, ClientMessage, Envelope, ServerMessage, parse_chain_feed_topic,
+};
 use super::subscription::SubscribeError;
 use crate::data::chat::LobbyChatRepo;
 use crate::data::lobbies::PgLobbyRepo;
@@ -337,7 +339,10 @@ fn authorize_subscribe(
     connection_id: Uuid,
     topic: &str,
 ) -> Result<(), &'static str> {
-    if topic == APP_TOPIC || parse_chain_feed_topic(topic).is_some() || topic.starts_with("lobby:")
+    if topic == APP_TOPIC
+        || topic == ALL_FEED_TOPIC
+        || parse_chain_feed_topic(topic).is_some()
+        || topic.starts_with("lobby:")
     {
         return Ok(());
     }

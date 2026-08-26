@@ -7,7 +7,8 @@ mod subscription;
 
 pub use handler::router;
 pub use protocol::{
-    APP_TOPIC, ClientMessage, ServerMessage, chain_feed_topic, parse_chain_feed_topic,
+    ALL_FEED_TOPIC, APP_TOPIC, ClientMessage, ServerMessage, chain_feed_topic,
+    parse_chain_feed_topic,
 };
 pub use session::{ConnectionId, SessionManager};
 pub use subscription::{SubscribeError, SubscriptionManager};

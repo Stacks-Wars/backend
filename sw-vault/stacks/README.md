@@ -36,7 +36,7 @@ USDCX_ASSET_NAME=usdcx-token
 HIRO_API_KEY=<hiro api key>
 ```
 
-Paid lobbies always require a real vault join tx (no auto-confirm). Balance SoT is the custodial address Hiro FT balance.
+Paid lobbies always require a real vault join tx (no auto-confirm). Balance SoT is the official explorer for that chain (Hiro for this Stacks vault).
 
 ## Local tools
 
