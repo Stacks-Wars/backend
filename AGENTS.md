@@ -43,6 +43,23 @@ Game engines live in separate crates (crates.io `sw_*`), not inside `sw-server` 
 - Respect fee and entry limits in server config.
 - Chain-specific code (Hiro, Stacks principals, vault function names) stays behind the host / a chain adapter. Games and HTTP routes should not grow a second chain's types inline.
 
+## Solana MCP
+
+For Solana-related work, prefer the Solana Developer MCP tools over model memory.
+
+Use `list_sections` first for non-trivial Solana questions so you can find the
+right documentation source ids and section ids.
+
+Use `get_documentation` when you need canonical docs for a specific source,
+framework, library, or ecosystem area. Use `Solana_Documentation_Search` or
+`Solana_Expert__Ask_For_Help` for narrow how-to questions, errors, or API usage.
+
+Whenever you write or modify Solana program Rust, call `program_autofixer` before
+returning code. It accepts `code`, optional `filename`, and optional `framework`
+(`auto`, `anchor`, or `pinocchio`). Apply the suggested fixes, then call
+`program_autofixer` again. Repeat until `require_another_tool_call_after_fixing`
+is false.
+
 ## Janitors
 
 - Free waiting lobbies older than 24h are expired by the Rust loop in `main.rs`.
