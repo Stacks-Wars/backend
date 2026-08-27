@@ -91,7 +91,6 @@ async fn get_game_activity(
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RecentQuery {
-    game_id: Option<String>,
     limit: Option<i64>,
 }
 
@@ -100,10 +99,7 @@ async fn list_recent_matches(
     Query(params): Query<RecentQuery>,
 ) -> AppResult<Json<Vec<RecentMatch>>> {
     let items = PgMatchRepo::new(state.db.clone())
-        .recent(
-            params.game_id.as_deref(),
-            params.limit.unwrap_or(12).clamp(1, 50),
-        )
+        .recent(params.limit.unwrap_or(12).clamp(1, 50))
         .await?;
     Ok(Json(items))
 }
