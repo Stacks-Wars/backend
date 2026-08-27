@@ -14,7 +14,9 @@ use uuid::Uuid;
 use crate::auth::AuthUser;
 use crate::config::{MIN_ENTRY_MICRO, USDCX_ASSET_NAME, USDCX_CONTRACT};
 use crate::data::join_requests::{JoinRequest, JoinRequestRepo};
-use crate::data::lobbies::{LobbyQuery, PgLobbyRepo, generate_unique_lobby_path};
+use crate::data::lobbies::{
+    LobbyQuery, MAX_ACTIVE_HOSTED_LOBBIES, PgLobbyRepo, generate_unique_lobby_path, hosted_lobby_ref,
+};
 use crate::data::lobby_runtime::{LobbyStateRepo, PlayerStateRepo};
 use crate::data::seat_holds::SeatHoldRepo;
 use crate::data::users::PgUserRepo;
@@ -350,6 +352,12 @@ async fn create_lobby(
         .ok_or(AppError::NotFound("creator user not found"))?;
 
     let lobbies = PgLobbyRepo::new(state.db.clone());
+    let hosted = lobbies.list_active_created_by(creator_id).await?;
+    if hosted.len() >= MAX_ACTIVE_HOSTED_LOBBIES {
+        return Err(AppError::TooManyLobbies {
+            lobbies: hosted.iter().map(hosted_lobby_ref).collect(),
+        });
+    }
     let path = match body
         .path
         .as_deref()
@@ -418,7 +426,7 @@ async fn create_lobby(
         participants: vec![creator_id],
     };
 
-    lobbies.insert(&lobby).await?;
+    lobbies.insert_under_host_cap(&lobby).await?;
 
     let lobby_state = LobbyState::new(lobby_id, 1);
     LobbyStateRepo::new(state.redis.clone())
