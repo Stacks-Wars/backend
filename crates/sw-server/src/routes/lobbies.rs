@@ -15,7 +15,8 @@ use crate::auth::AuthUser;
 use crate::config::{MIN_ENTRY_MICRO, USDCX_ASSET_NAME, USDCX_CONTRACT};
 use crate::data::join_requests::{JoinRequest, JoinRequestRepo};
 use crate::data::lobbies::{
-    LobbyQuery, MAX_ACTIVE_HOSTED_LOBBIES, PgLobbyRepo, generate_unique_lobby_path, hosted_lobby_ref,
+    LobbyQuery, MAX_ACTIVE_HOSTED_LOBBIES, PgLobbyRepo, generate_unique_lobby_path,
+    hosted_lobby_ref,
 };
 use crate::data::lobby_runtime::{LobbyStateRepo, PlayerStateRepo};
 use crate::data::seat_holds::SeatHoldRepo;
@@ -1183,6 +1184,8 @@ async fn start_lobby(
     let host = ServerGameHost::arc(
         lobby_id,
         lobby.path.clone(),
+        lobby.name.clone(),
+        lobby.is_private,
         state.db.clone(),
         lobby.game_id.clone(),
         lobby.chain,

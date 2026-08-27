@@ -202,6 +202,10 @@ impl PgLobbyRepo {
             .statuses
             .as_ref()
             .map(|list| list.iter().map(|s| s.as_db_str().to_owned()).collect());
+        // Finished-only lists want last settle time, not "open first, then created".
+        let by_updated = query.statuses.as_ref().is_some_and(|list| {
+            !list.is_empty() && list.iter().all(|s| *s == LobbyStatus::Finished)
+        });
 
         let rows = sqlx::query_as::<_, LobbyRow>(
             r#"
@@ -225,13 +229,16 @@ impl PgLobbyRepo {
                    OR entry_amount_micro = 0
                    OR chain::text = $10)
             ORDER BY
-                CASE status
-                    WHEN 'waiting' THEN 0
-                    WHEN 'starting' THEN 1
-                    WHEN 'in_progress' THEN 2
-                    ELSE 3
+                CASE
+                    WHEN $11::BOOLEAN THEN 0
+                    ELSE CASE status
+                        WHEN 'waiting' THEN 0
+                        WHEN 'starting' THEN 1
+                        WHEN 'in_progress' THEN 2
+                        ELSE 3
+                    END
                 END,
-                created_at DESC
+                CASE WHEN $11::BOOLEAN THEN updated_at ELSE created_at END DESC
             LIMIT $8 OFFSET $9
             "#,
         )
@@ -245,6 +252,7 @@ impl PgLobbyRepo {
         .bind(query.limit)
         .bind(query.offset)
         .bind(query.chain.as_deref())
+        .bind(by_updated)
         .fetch_all(&self.pool)
         .await
         .map_err(|e| AppError::Internal(e.into()))?;

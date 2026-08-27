@@ -228,8 +228,8 @@ impl PgMatchRepo {
         Ok(rows)
     }
 
-    /// Platform-wide recent results, optionally scoped to one game.
-    pub async fn recent(&self, game_id: Option<&str>, limit: i64) -> AppResult<Vec<RecentMatch>> {
+    /// Platform-wide recent results for the landing ticker.
+    pub async fn recent(&self, limit: i64) -> AppResult<Vec<RecentMatch>> {
         let rows = sqlx::query_as::<_, RecentMatchRow>(
             r#"
             SELECT m.id AS match_id, m.lobby_path, m.game_id, m.pot_micro,
@@ -242,12 +242,10 @@ impl PgMatchRepo {
             LEFT JOIN match_players mp
                 ON mp.match_id = m.id AND mp.is_winner = true
             LEFT JOIN users u ON u.id = mp.user_id
-            WHERE ($1::TEXT IS NULL OR m.game_id = $1)
             ORDER BY m.finished_at DESC
-            LIMIT $2
+            LIMIT $1
             "#,
         )
-        .bind(game_id)
         .bind(limit)
         .fetch_all(&self.pool)
         .await
