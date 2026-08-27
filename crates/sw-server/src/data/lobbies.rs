@@ -1,10 +1,13 @@
 use chrono::{DateTime, Utc};
-use sqlx::PgPool;
+use sqlx::{Executor, PgPool, Postgres};
 use sw_domain::{GameId, Lobby, LobbyId, LobbyStatus, UserId};
 use uuid::Uuid;
 
 use crate::data::lobby_status::DbLobbyStatus;
-use crate::error::{AppError, AppResult};
+use crate::error::{AppError, AppResult, HostedLobbyRef};
+
+/// A host may have this many unfinished (`waiting` / `starting` / `in_progress`) lobbies.
+pub const MAX_ACTIVE_HOSTED_LOBBIES: usize = 2;
 
 #[derive(Debug, sqlx::FromRow)]
 struct LobbyRow {
@@ -109,44 +112,27 @@ impl PgLobbyRepo {
     }
 
     pub async fn insert(&self, lobby: &Lobby) -> AppResult<()> {
-        let participant_uuids: Vec<Uuid> =
-            lobby.participants.iter().map(|id| id.as_uuid()).collect();
-        let status = DbLobbyStatus::from(lobby.status);
+        insert_lobby(&self.pool, lobby).await
+    }
 
-        sqlx::query(
-            r#"
-            INSERT INTO lobbies (
-                id, path, name, description, game_id, creator_id, chain,
-                entry_amount_micro, pot_micro,
-                is_private, is_sponsored, status, participants,
-                created_at, updated_at
-            ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7::chain_id,
-                $8, $9,
-                $10, $11, $12, $13,
-                $14, $15
-            )
-            "#,
-        )
-        .bind(lobby.id.as_uuid())
-        .bind(&lobby.path)
-        .bind(&lobby.name)
-        .bind(&lobby.description)
-        .bind(lobby.game_id.as_str())
-        .bind(lobby.creator_id.as_uuid())
-        .bind(lobby.chain.as_str())
-        .bind(lobby.entry_amount_micro)
-        .bind(lobby.pot_micro)
-        .bind(lobby.is_private)
-        .bind(lobby.is_sponsored)
-        .bind(status)
-        .bind(&participant_uuids)
-        .bind(lobby.created_at)
-        .bind(lobby.updated_at)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
-
+    /// Lock the creator, refuse a third unfinished host lobby, then insert.
+    pub async fn insert_under_host_cap(&self, lobby: &Lobby) -> AppResult<()> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?;
+        lock_creator_xact(&mut tx, lobby.creator_id).await?;
+        let active = list_active_created_by_exec(&mut *tx, lobby.creator_id).await?;
+        if active.len() >= MAX_ACTIVE_HOSTED_LOBBIES {
+            return Err(AppError::TooManyLobbies {
+                lobbies: active.iter().map(hosted_lobby_ref).collect(),
+            });
+        }
+        insert_lobby(&mut *tx, lobby).await?;
+        tx.commit()
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?;
         Ok(())
     }
 
@@ -463,6 +449,104 @@ impl PgLobbyRepo {
 
         rows.into_iter().map(LobbyRow::into_lobby).collect()
     }
+
+    pub async fn list_active_created_by(&self, user_id: UserId) -> AppResult<Vec<Lobby>> {
+        list_active_created_by_exec(&self.pool, user_id).await
+    }
+}
+
+pub fn hosted_lobby_ref(lobby: &Lobby) -> HostedLobbyRef {
+    HostedLobbyRef {
+        path: lobby.path.clone(),
+        name: lobby.name.clone(),
+        status: lobby.status,
+    }
+}
+
+async fn lock_creator_xact(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    user_id: UserId,
+) -> AppResult<()> {
+    let uuid = user_id.as_uuid();
+    let bytes = *uuid.as_bytes();
+    let k1 = i32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    let k2 = i32::from_be_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+    sqlx::query("SELECT pg_advisory_xact_lock($1, $2)")
+        .bind(k1)
+        .bind(k2)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+    Ok(())
+}
+
+async fn list_active_created_by_exec<'e, E>(exec: E, user_id: UserId) -> AppResult<Vec<Lobby>>
+where
+    E: Executor<'e, Database = Postgres>,
+{
+    let rows = sqlx::query_as::<_, LobbyRow>(
+        r#"
+            SELECT id, path, name, description, game_id, creator_id, chain::text AS chain,
+                   entry_amount_micro, pot_micro,
+                   is_private, is_sponsored, status, participants,
+                   created_at, updated_at
+            FROM lobbies
+            WHERE creator_id = $1
+              AND status IN ('waiting', 'starting', 'in_progress')
+            ORDER BY created_at ASC
+            LIMIT 3
+            "#,
+    )
+    .bind(user_id.as_uuid())
+    .fetch_all(exec)
+    .await
+    .map_err(|e| AppError::Internal(e.into()))?;
+
+    rows.into_iter().map(LobbyRow::into_lobby).collect()
+}
+
+async fn insert_lobby<'e, E>(exec: E, lobby: &Lobby) -> AppResult<()>
+where
+    E: Executor<'e, Database = Postgres>,
+{
+    let participant_uuids: Vec<Uuid> = lobby.participants.iter().map(|id| id.as_uuid()).collect();
+    let status = DbLobbyStatus::from(lobby.status);
+
+    sqlx::query(
+        r#"
+            INSERT INTO lobbies (
+                id, path, name, description, game_id, creator_id, chain,
+                entry_amount_micro, pot_micro,
+                is_private, is_sponsored, status, participants,
+                created_at, updated_at
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7::chain_id,
+                $8, $9,
+                $10, $11, $12, $13,
+                $14, $15
+            )
+            "#,
+    )
+    .bind(lobby.id.as_uuid())
+    .bind(&lobby.path)
+    .bind(&lobby.name)
+    .bind(&lobby.description)
+    .bind(lobby.game_id.as_str())
+    .bind(lobby.creator_id.as_uuid())
+    .bind(lobby.chain.as_str())
+    .bind(lobby.entry_amount_micro)
+    .bind(lobby.pot_micro)
+    .bind(lobby.is_private)
+    .bind(lobby.is_sponsored)
+    .bind(status)
+    .bind(&participant_uuids)
+    .bind(lobby.created_at)
+    .bind(lobby.updated_at)
+    .execute(exec)
+    .await
+    .map_err(|e| AppError::Internal(e.into()))?;
+
+    Ok(())
 }
 
 /// First 8 hex chars of a UUID without dashes.

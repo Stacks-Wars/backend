@@ -2,7 +2,17 @@ use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
+use sw_domain::LobbyStatus;
 use thiserror::Error;
+
+/// Compact lobby the create-cap 409 returns so the modal can link rooms.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostedLobbyRef {
+    pub path: String,
+    pub name: String,
+    pub status: LobbyStatus,
+}
 
 #[derive(Debug, Error)]
 pub enum AppError {
@@ -23,6 +33,10 @@ pub enum AppError {
 
     #[error("conflict: {0}")]
     Conflict(String),
+
+    /// Host already has the maximum unfinished lobbies.
+    #[error("settle your open lobbies before hosting another")]
+    TooManyLobbies { lobbies: Vec<HostedLobbyRef> },
 
     /// Lobby capacity reached (including concurrent seat holds).
     #[error("lobby is full")]
@@ -55,6 +69,8 @@ struct ErrorBody {
     pending_claim_micro: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     delete_code: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lobbies: Option<Vec<HostedLobbyRef>>,
 }
 
 impl AppError {
@@ -67,6 +83,7 @@ impl AppError {
                 (StatusCode::PAYMENT_REQUIRED, "insufficient_balance")
             }
             Self::Conflict(_) => (StatusCode::CONFLICT, "conflict"),
+            Self::TooManyLobbies { .. } => (StatusCode::CONFLICT, "too_many_lobbies"),
             Self::LobbyFull => (StatusCode::CONFLICT, "lobby_full"),
             Self::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
             Self::AccountDeleteBlocked { .. } => (StatusCode::CONFLICT, "account_delete_blocked"),
@@ -77,36 +94,45 @@ impl AppError {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        let (status, code) = self.status_and_code();
-        let (required_micro, available_micro, pending_claim_micro, delete_code) = match &self {
-            Self::InsufficientBalance {
-                required_micro,
-                available_micro,
-            } => (Some(*required_micro), Some(*available_micro), None, None),
-            Self::AccountDeleteBlocked {
-                code,
-                available_micro,
-                pending_claim_micro,
-            } => (
-                None,
-                Some(*available_micro),
-                Some(*pending_claim_micro),
-                Some(*code),
-            ),
-            _ => (None, None, None, None),
-        };
-        let code = if let Some(delete_code) = delete_code {
-            delete_code
-        } else {
-            code
-        };
+        let (status, mut code) = self.status_and_code();
+        let error = self.to_string();
+        let (required_micro, available_micro, pending_claim_micro, delete_code, lobbies) =
+            match self {
+                Self::InsufficientBalance {
+                    required_micro,
+                    available_micro,
+                } => (
+                    Some(required_micro),
+                    Some(available_micro),
+                    None,
+                    None,
+                    None,
+                ),
+                Self::AccountDeleteBlocked {
+                    code: delete_code,
+                    available_micro,
+                    pending_claim_micro,
+                } => {
+                    code = delete_code;
+                    (
+                        None,
+                        Some(available_micro),
+                        Some(pending_claim_micro),
+                        Some(delete_code),
+                        None,
+                    )
+                }
+                Self::TooManyLobbies { lobbies } => (None, None, None, None, Some(lobbies)),
+                _ => (None, None, None, None, None),
+            };
         let body = ErrorBody {
-            error: self.to_string(),
+            error,
             code,
             required_micro,
             available_micro,
             pending_claim_micro,
             delete_code,
+            lobbies,
         };
         (status, Json(body)).into_response()
     }
