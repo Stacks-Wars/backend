@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
-use redis::aio::ConnectionManager;
 use redis::Client;
+use redis::aio::ConnectionManager;
 use tracing::info;
 
 /// Open a Redis connection manager and verify connectivity. Required for boot.

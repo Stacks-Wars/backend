@@ -5,7 +5,7 @@ use parking_lot::RwLock;
 use sw_domain::UserId;
 use tracing::debug;
 
-use super::protocol::{ServerMessage, MAX_TOPICS_PER_CONNECTION};
+use super::protocol::{MAX_TOPICS_PER_CONNECTION, ServerMessage};
 use super::session::{ConnectionId, SessionManager};
 
 #[derive(Debug, Default)]

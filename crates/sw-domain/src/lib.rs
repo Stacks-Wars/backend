@@ -3,6 +3,7 @@
 //! These are contracts and shapes only — no persistence or business rules.
 
 mod accounting;
+mod chain;
 mod chat;
 mod game;
 mod ids;
@@ -11,6 +12,7 @@ mod season;
 mod user;
 
 pub use accounting::*;
+pub use chain::*;
 pub use chat::*;
 pub use game::*;
 pub use ids::*;

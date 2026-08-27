@@ -93,11 +93,16 @@ impl PushSubscriptionRepo {
         .map_err(|e| AppError::Internal(e.into()))
     }
 
-    /// Public-lobby fanout: every subscriber who left lobby alerts on.
+    /// Public-lobby fanout: subscribers with lobby alerts on.
+    ///
+    /// `paid_chain` scopes paid/sponsored lobbies to users currently on that
+    /// chain. Free lobbies pass `None` and reach every alert subscriber.
     pub async fn list_lobby_alert_targets(
         &self,
         except_user: UserId,
+        paid_chain: Option<sw_domain::ChainId>,
     ) -> AppResult<Vec<PushSubscription>> {
+        let chain = paid_chain.map(|c| c.as_str());
         sqlx::query_as::<_, PushSubscription>(
             r#"
             SELECT s.endpoint, s.user_id, s.p256dh, s.auth, s.user_agent
@@ -106,9 +111,11 @@ impl PushSubscriptionRepo {
             WHERE u.lobby_alerts_enabled = true
               AND u.deleted_at IS NULL
               AND s.user_id <> $1
+              AND ($2::TEXT IS NULL OR u.current_chain::text = $2)
             "#,
         )
         .bind(except_user.as_uuid())
+        .bind(chain)
         .fetch_all(&self.pool)
         .await
         .map_err(|e| AppError::Internal(e.into()))

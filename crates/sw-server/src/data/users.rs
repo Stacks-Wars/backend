@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
-use sw_domain::{User, UserId};
+use sw_domain::{ChainId, User, UserId};
 use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
@@ -38,11 +38,12 @@ pub struct UpdateProfileInput {
 
 #[derive(Debug, Clone)]
 pub struct CustodialWalletInput {
-    pub stx_address: String,
+    pub address: String,
     pub public_key: String,
-    pub encrypted_mnemonic: String,
+    pub encrypted_signing_material: String,
     pub kms_key_version: String,
     pub network: String,
+    pub chain: String,
 }
 
 /// The subset of a profile that is safe to show to anyone.
@@ -59,9 +60,10 @@ pub struct UserCard {
 #[derive(Debug, Clone)]
 pub struct CustodialWalletPublic {
     pub user_id: Uuid,
-    pub stx_address: String,
+    pub address: String,
     pub public_key: String,
     pub network: String,
+    pub chain: String,
 }
 
 /// Includes ciphertext for server-action signing (internal secret only).
@@ -69,22 +71,22 @@ pub struct CustodialWalletPublic {
 pub struct CustodialWalletSecret {
     pub id: Uuid,
     pub user_id: Uuid,
-    pub stx_address: String,
+    pub address: String,
     pub public_key: String,
     pub network: String,
-    pub encrypted_mnemonic: String,
+    pub chain: String,
+    pub encrypted_signing_material: String,
     pub kms_key_version: String,
 }
 
 #[derive(Debug, sqlx::FromRow)]
+#[allow(dead_code)]
 struct UserRow {
     id: Uuid,
     username: Option<String>,
     display_name: Option<String>,
     email: String,
     email_verified_at: Option<DateTime<Utc>>,
-    wallet_address: Option<String>,
-    wallet_verified_at: Option<DateTime<Utc>>,
     avatar_url: Option<String>,
     lobby_alerts_enabled: bool,
     legal_accepted_at: Option<DateTime<Utc>>,
@@ -97,19 +99,21 @@ struct UserRow {
 #[derive(Debug, sqlx::FromRow)]
 struct CustodialWalletRow {
     user_id: Uuid,
-    stx_address: String,
+    address: String,
     public_key: String,
     network: String,
+    chain: String,
 }
 
 #[derive(Debug, sqlx::FromRow)]
 struct CustodialWalletSecretRow {
     id: Uuid,
     user_id: Uuid,
-    stx_address: String,
+    address: String,
     public_key: String,
     network: String,
-    encrypted_mnemonic: String,
+    chain: String,
+    encrypted_signing_material: String,
     kms_key_version: String,
 }
 
@@ -121,8 +125,6 @@ impl From<UserRow> for User {
             display_name: row.display_name,
             email: row.email,
             email_verified_at: row.email_verified_at,
-            wallet_address: row.wallet_address,
-            wallet_verified_at: row.wallet_verified_at,
             avatar_url: row.avatar_url,
             created_at: row.created_at,
             updated_at: row.updated_at,
@@ -134,9 +136,10 @@ impl From<CustodialWalletRow> for CustodialWalletPublic {
     fn from(row: CustodialWalletRow) -> Self {
         Self {
             user_id: row.user_id,
-            stx_address: row.stx_address,
+            address: row.address,
             public_key: row.public_key,
             network: row.network,
+            chain: row.chain,
         }
     }
 }
@@ -146,10 +149,11 @@ impl From<CustodialWalletSecretRow> for CustodialWalletSecret {
         Self {
             id: row.id,
             user_id: row.user_id,
-            stx_address: row.stx_address,
+            address: row.address,
             public_key: row.public_key,
             network: row.network,
-            encrypted_mnemonic: row.encrypted_mnemonic,
+            chain: row.chain,
+            encrypted_signing_material: row.encrypted_signing_material,
             kms_key_version: row.kms_key_version,
         }
     }
@@ -168,7 +172,7 @@ impl PgUserRepo {
         let row = sqlx::query_as::<_, UserRow>(
             r#"
             SELECT id, username, display_name, email, email_verified_at,
-                   wallet_address, wallet_verified_at, avatar_url,
+                   avatar_url,
                    lobby_alerts_enabled, legal_accepted_at, legal_version,
                    deleted_at, created_at, updated_at
             FROM users
@@ -183,11 +187,30 @@ impl PgUserRepo {
         Ok(row.map(User::from))
     }
 
+    pub async fn get_active_by_id(&self, id: UserId) -> AppResult<Option<User>> {
+        let row = sqlx::query_as::<_, UserRow>(
+            r#"
+            SELECT id, username, display_name, email, email_verified_at,
+                   avatar_url,
+                   lobby_alerts_enabled, legal_accepted_at, legal_version,
+                   deleted_at, created_at, updated_at
+            FROM users
+            WHERE id = $1 AND deleted_at IS NULL
+            "#,
+        )
+        .bind(id.as_uuid())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|err| AppError::Internal(err.into()))?;
+
+        Ok(row.map(User::from))
+    }
+
     pub async fn get_by_username(&self, username: &str) -> AppResult<Option<User>> {
         let row = sqlx::query_as::<_, UserRow>(
             r#"
             SELECT id, username, display_name, email, email_verified_at,
-                   wallet_address, wallet_verified_at, avatar_url,
+                   avatar_url,
                    lobby_alerts_enabled, legal_accepted_at, legal_version,
                    deleted_at, created_at, updated_at
             FROM users
@@ -227,7 +250,7 @@ impl PgUserRepo {
                 updated_at = now()
             WHERE id = $1
             RETURNING id, username, display_name, email, email_verified_at,
-                      wallet_address, wallet_verified_at, avatar_url,
+                      avatar_url,
                       lobby_alerts_enabled, legal_accepted_at, legal_version,
                       deleted_at, created_at, updated_at
             "#,
@@ -300,7 +323,7 @@ impl PgUserRepo {
                 email_verified_at = COALESCE(EXCLUDED.email_verified_at, users.email_verified_at),
                 updated_at = now()
             RETURNING id, username, display_name, email, email_verified_at,
-                      wallet_address, wallet_verified_at, avatar_url,
+                      avatar_url,
                       lobby_alerts_enabled, legal_accepted_at, legal_version,
                       deleted_at, created_at, updated_at
             "#,
@@ -324,42 +347,74 @@ impl PgUserRepo {
     pub async fn get_custodial_wallet(
         &self,
         user_id: UserId,
+        chain: &str,
     ) -> AppResult<Option<CustodialWalletPublic>> {
         let row = sqlx::query_as::<_, CustodialWalletRow>(
             r#"
-            SELECT user_id, stx_address, public_key, network
+            SELECT user_id, address, public_key, network, chain::text AS chain
             FROM custodial_wallets
-            WHERE user_id = $1 AND status = 'active'
+            WHERE user_id = $1 AND chain::text = $2 AND status = 'active'
             LIMIT 1
             "#,
         )
         .bind(user_id.as_uuid())
+        .bind(chain)
         .fetch_optional(&self.pool)
         .await
         .map_err(|err| AppError::Internal(err.into()))?;
 
-        Ok(row.map(CustodialWalletPublic::from))
+        Ok(row
+            .map(CustodialWalletPublic::from)
+            .filter(|w| ChainId::from_optional(Some(&w.chain)).matches_address(&w.address)))
+    }
+
+    pub async fn list_custodial_wallets(
+        &self,
+        user_id: UserId,
+    ) -> AppResult<Vec<CustodialWalletPublic>> {
+        let rows = sqlx::query_as::<_, CustodialWalletRow>(
+            r#"
+            SELECT user_id, address, public_key, network, chain::text AS chain
+            FROM custodial_wallets
+            WHERE user_id = $1 AND status = 'active'
+            ORDER BY CASE chain::text WHEN 'solana' THEN 0 ELSE 1 END, created_at ASC
+            "#,
+        )
+        .bind(user_id.as_uuid())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|err| AppError::Internal(err.into()))?;
+
+        Ok(rows
+            .into_iter()
+            .map(CustodialWalletPublic::from)
+            .filter(|w| ChainId::from_optional(Some(&w.chain)).matches_address(&w.address))
+            .collect())
     }
 
     pub async fn get_custodial_wallet_secret(
         &self,
         user_id: UserId,
+        chain: &str,
     ) -> AppResult<Option<CustodialWalletSecret>> {
         let row = sqlx::query_as::<_, CustodialWalletSecretRow>(
             r#"
-            SELECT id, user_id, stx_address, public_key, network,
-                   encrypted_mnemonic, kms_key_version
+            SELECT id, user_id, address, public_key, network, chain::text AS chain,
+                   encrypted_signing_material, kms_key_version
             FROM custodial_wallets
-            WHERE user_id = $1 AND status = 'active'
+            WHERE user_id = $1 AND chain::text = $2 AND status = 'active'
             LIMIT 1
             "#,
         )
         .bind(user_id.as_uuid())
+        .bind(chain)
         .fetch_optional(&self.pool)
         .await
         .map_err(|err| AppError::Internal(err.into()))?;
 
-        Ok(row.map(CustodialWalletSecret::from))
+        Ok(row
+            .map(CustodialWalletSecret::from)
+            .filter(|w| ChainId::from_optional(Some(&w.chain)).matches_address(&w.address)))
     }
 
     pub async fn create_custodial_wallet(
@@ -367,52 +422,79 @@ impl PgUserRepo {
         user_id: UserId,
         wallet: CustodialWalletInput,
     ) -> AppResult<CustodialWalletPublic> {
-        if self.get_by_id(user_id).await?.is_none() {
+        if self.get_active_by_id(user_id).await?.is_none() {
             return Err(AppError::NotFound("user"));
         }
 
-        if let Some(existing) = self.get_custodial_wallet(user_id).await? {
+        self.relabel_stacks_addresses(user_id).await?;
+
+        if let Some(existing) = self.get_custodial_wallet(user_id, &wallet.chain).await? {
             return Ok(existing);
         }
 
         sqlx::query(
             r#"
             INSERT INTO custodial_wallets (
-                user_id, stx_address, public_key, encrypted_mnemonic,
-                kms_key_version, network
+                user_id, address, public_key, encrypted_signing_material,
+                kms_key_version, network, chain
             )
-            VALUES ($1, $2, $3, $4, $5, $6)
-            ON CONFLICT (user_id) DO NOTHING
+            VALUES ($1, $2, $3, $4, $5, $6, $7::chain_id)
+            ON CONFLICT (user_id, chain, network) DO NOTHING
             "#,
         )
         .bind(user_id.as_uuid())
-        .bind(&wallet.stx_address)
+        .bind(&wallet.address)
         .bind(&wallet.public_key)
-        .bind(&wallet.encrypted_mnemonic)
+        .bind(&wallet.encrypted_signing_material)
         .bind(&wallet.kms_key_version)
         .bind(&wallet.network)
+        .bind(&wallet.chain)
         .execute(&self.pool)
         .await
         .map_err(|err| AppError::Internal(err.into()))?;
 
-        self.get_custodial_wallet(user_id)
+        self.get_custodial_wallet(user_id, &wallet.chain)
             .await?
-            .ok_or_else(|| AppError::Internal(anyhow::anyhow!("custodial wallet missing after insert")))
+            .ok_or_else(|| {
+                AppError::Internal(anyhow::anyhow!("custodial wallet missing after insert"))
+            })
+    }
+
+    /// Rows that look like Stacks principals must not sit on `chain = solana`.
+    /// That happened when ADD COLUMN defaulted existing wallets to solana.
+    async fn relabel_stacks_addresses(&self, user_id: UserId) -> AppResult<()> {
+        sqlx::query(
+            r#"
+            UPDATE custodial_wallets
+            SET chain = 'stacks'
+            WHERE user_id = $1
+              AND chain = 'solana'
+              AND (address LIKE 'SP%' OR address LIKE 'ST%')
+              AND address !~ '[a-z]'
+            "#,
+        )
+        .bind(user_id.as_uuid())
+        .execute(&self.pool)
+        .await
+        .map_err(|err| AppError::Internal(err.into()))?;
+        Ok(())
     }
 
     pub async fn update_custodial_wallet_encryption(
         &self,
         user_id: UserId,
-        encrypted_mnemonic: &str,
+        chain: &str,
+        encrypted_signing_material: &str,
         kms_key_version: &str,
     ) -> AppResult<bool> {
         let result = sqlx::query(
             r#"
             UPDATE custodial_wallets
-            SET encrypted_mnemonic = $2,
+            SET encrypted_signing_material = $2,
                 kms_key_version = $3,
                 updated_at = now()
             WHERE user_id = $1
+              AND chain::text = $4
               AND status = 'active'
               AND (
                     kms_key_version ~ '/cryptoKeyVersions/1$'
@@ -421,8 +503,9 @@ impl PgUserRepo {
             "#,
         )
         .bind(user_id.as_uuid())
-        .bind(encrypted_mnemonic)
+        .bind(encrypted_signing_material)
         .bind(kms_key_version)
+        .bind(chain)
         .execute(&self.pool)
         .await
         .map_err(|err| AppError::Internal(err.into()))?;
@@ -431,12 +514,10 @@ impl PgUserRepo {
     }
 
     pub async fn prefs(&self, id: UserId) -> AppResult<Option<UserPrefs>> {
-        let row = sqlx::query_as::<_, UserRow>(
+        let row = sqlx::query_as::<_, UserPrefsRow>(
             r#"
-            SELECT id, username, display_name, email, email_verified_at,
-                   wallet_address, wallet_verified_at, avatar_url,
-                   lobby_alerts_enabled, legal_accepted_at, legal_version,
-                   deleted_at, created_at, updated_at
+            SELECT lobby_alerts_enabled, current_chain::text AS current_chain,
+                   legal_accepted_at, legal_version, deleted_at
             FROM users
             WHERE id = $1
             "#,
@@ -448,6 +529,7 @@ impl PgUserRepo {
 
         Ok(row.map(|r| UserPrefs {
             lobby_alerts_enabled: r.lobby_alerts_enabled,
+            current_chain: r.current_chain.parse().unwrap_or_default(),
             legal_accepted_at: r.legal_accepted_at,
             legal_version: r.legal_version,
             deleted_at: r.deleted_at,
@@ -495,9 +577,42 @@ impl PgUserRepo {
         Ok(())
     }
 
-    /// Scrub PII and disable the custodial wallet. Keeps the row for FK history.
+    pub async fn set_current_chain(&self, id: UserId, chain: ChainId) -> AppResult<()> {
+        let n = sqlx::query(
+            r#"
+            UPDATE users SET current_chain = $2::chain_id, updated_at = now()
+            WHERE id = $1 AND deleted_at IS NULL
+            "#,
+        )
+        .bind(id.as_uuid())
+        .bind(chain.as_str())
+        .execute(&self.pool)
+        .await
+        .map_err(|err| AppError::Internal(err.into()))?
+        .rows_affected();
+        if n == 0 {
+            return Err(AppError::NotFound("user"));
+        }
+        Ok(())
+    }
+
+    /// Scrub PII, drop custodial keys, and remove the Neon Auth identity so the
+    /// email can be used to sign up again. Keeps the `users` row for FK history.
     pub async fn anonymize(&self, id: UserId) -> AppResult<()> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|err| AppError::Internal(err.into()))?;
+
         let tombstone = format!("deleted+{}@invalid", id.as_uuid());
+        let neon_email: Option<String> =
+            sqlx::query_scalar(r#"SELECT email FROM neon_auth."user" WHERE id = $1"#)
+                .bind(id.as_uuid())
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|err| AppError::Internal(err.into()))?;
+
         sqlx::query(
             r#"
             UPDATE users SET
@@ -505,8 +620,6 @@ impl PgUserRepo {
                 display_name = 'Deleted player',
                 email = $2,
                 email_verified_at = NULL,
-                wallet_address = NULL,
-                wallet_verified_at = NULL,
                 avatar_url = NULL,
                 lobby_alerts_enabled = false,
                 deleted_at = now(),
@@ -516,29 +629,57 @@ impl PgUserRepo {
         )
         .bind(id.as_uuid())
         .bind(&tombstone)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(|err| AppError::Internal(err.into()))?;
 
         sqlx::query(r#"DELETE FROM custodial_wallets WHERE user_id = $1"#)
             .bind(id.as_uuid())
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(|err| AppError::Internal(err.into()))?;
 
         sqlx::query(r#"DELETE FROM user_game_stats WHERE user_id = $1"#)
             .bind(id.as_uuid())
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(|err| AppError::Internal(err.into()))?;
 
+        if let Some(email) = neon_email.as_deref() {
+            sqlx::query(r#"DELETE FROM neon_auth.verification WHERE identifier = $1"#)
+                .bind(email)
+                .execute(&mut *tx)
+                .await
+                .map_err(|err| AppError::Internal(err.into()))?;
+        }
+
+        // Frees `neon_auth.user.email` (unique). Sessions/accounts cascade.
+        sqlx::query(r#"DELETE FROM neon_auth."user" WHERE id = $1"#)
+            .bind(id.as_uuid())
+            .execute(&mut *tx)
+            .await
+            .map_err(|err| AppError::Internal(err.into()))?;
+
+        tx.commit()
+            .await
+            .map_err(|err| AppError::Internal(err.into()))?;
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct UserPrefsRow {
+    lobby_alerts_enabled: bool,
+    current_chain: String,
+    legal_accepted_at: Option<DateTime<Utc>>,
+    legal_version: Option<String>,
+    deleted_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone)]
 pub struct UserPrefs {
     pub lobby_alerts_enabled: bool,
+    pub current_chain: ChainId,
     pub legal_accepted_at: Option<DateTime<Utc>>,
     pub legal_version: Option<String>,
     pub deleted_at: Option<DateTime<Utc>>,

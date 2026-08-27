@@ -1,52 +1,12 @@
-# sw-vault-v1
+# sw-vault
 
-Central USDCx escrow for Stacks Wars lobbies (normal + sponsored).
+On-chain escrow for paid lobbies. Stacks is live. Solana is next.
 
-## Clarity 4 (mainnet)
+| Chain | Path | Runtime |
+| --- | --- | --- |
+| Stacks | [`stacks/`](./stacks) | Clarinet / Clarity (`sw-vault-v1`) |
+| Solana | [`solana/programs/src/lib.rs`](./solana/programs/src/lib.rs) | Anchor / USDC token accounts |
 
-Mainnet epoch uses **Clarity 4**. The old `as-contract` builtin was **removed**.
+The Next.js app sponsors fees on both chains: Stacks via `sponsorTransaction`, Solana via a platform fee-payer on `@solana/kit` (`lib/solana/sponsor.ts`). Players sign as the token authority and do not need the native gas token.
 
-| Old (Clarity ≤3) | New (Clarity 4) |
-| --- | --- |
-| `(as-contract tx-sender)` | `current-contract` |
-| `(as-contract (…))` | `(as-contract? ((with-ft …)) …)` |
-
-In this contract that meant:
-
-1. **transfer-in** recipient: `current-contract` (was `(as-contract tx-sender)`)
-2. **transfer-out**: `(as-contract? ((with-ft 'SP120…usdcx "usdcx-token" amount)) …)`
-
-Deploy with **Clarity version 4** (default on current mainnet tooling).
-
-Token calls use the literal principal  
-`'SP120SBRBQJ00MCWS7TM5R8WJNTTKD5K0HFRC2CNE.usdcx`  
-(Clarity cannot `contract-call?` through a `define-constant`).
-
-## Deploy
-
-1. Derive compressed pubkey from `STACKS_WARS_KEY` (account 0) and bake it as `TRUSTED-PUBLIC-KEY`.
-2. Deploy from `SP299MBHT7FPPP2SKEY73V4DHW67467SED87A4HH4` as **Clarity 4**
-   (same principal as on-chain `PLATFORM-WALLET` for the 2% claim fee).
-3. Set env on backend + frontend:
-
-```
-SW_VAULT_CONTRACT=SP299MBHT7FPPP2SKEY73V4DHW67467SED87A4HH4.sw-vault-v1
-STACKS_WARS_KEY=<24-word mnemonic>
-USDCX_ASSET_NAME=usdcx-token
-HIRO_API_KEY=<hiro api key>
-```
-
-Paid lobbies always require a real vault join tx (no auto-confirm). Balance SoT is the custodial address Hiro FT balance.
-
-## Local tools
-
-Clarinet **≥ 3.22** and `@stacks/clarinet-sdk` (not the old `@hirosystems/*` 3.8 packages) are required for Clarity 4 / `as-contract?`.
-
-```bash
-# optional local CLI
-# download clarinet 3.22+ into .bin/clarinet
-
-npm install
-npm test
-./.bin/clarinet check   # or: clarinet check
-```
+Do not 1:1-port the Clarity maps onto Solana. Solana uses a lobby PDA + USDC ATAs, with the platform key as a remaining signer on leave / kick / claim.

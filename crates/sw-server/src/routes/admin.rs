@@ -7,8 +7,8 @@ use uuid::Uuid;
 
 use crate::auth::{AuthUser, InternalSecret};
 use crate::config::{USDCX_ASSET_NAME, USDCX_CONTRACT};
-use crate::data::lobby_runtime::PlayerStateRepo;
 use crate::data::lobbies::PgLobbyRepo;
+use crate::data::lobby_runtime::PlayerStateRepo;
 use crate::data::seasons::{PgSeasonRepo, SeasonRepo, UpdateSeasonInput};
 use crate::error::{AppError, AppResult};
 use crate::services::hiro::HiroClient;
@@ -52,7 +52,7 @@ struct UpdateSeasonBody {
 #[serde(rename_all = "camelCase")]
 struct ExpireSeatBody {
     user_id: Uuid,
-    stx_address: String,
+    address: String,
     /// Omit / empty when the seat was free (sponsored guest or free lobby).
     #[serde(default)]
     vault_txid: Option<String>,
@@ -139,7 +139,9 @@ async fn expire_seat(
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| AppError::BadRequest("vaultTxid required for vault lobby seat".into()))?;
+            .ok_or_else(|| {
+                AppError::BadRequest("vaultTxid required for vault lobby seat".into())
+            })?;
         let hiro = HiroClient::new(
             state.config.hiro_api_url.clone(),
             state.config.hiro_api_key.clone(),
@@ -149,20 +151,14 @@ async fn expire_seat(
         );
         let reader = VaultReader::new(&hiro, &state.config.sw_vault_contract);
         reader
-            .assert_not_joined(&lobby.path, body.stx_address.trim(), txid)
+            .assert_not_joined(&lobby.path, body.address.trim(), txid)
             .await?;
-        let _ = WalletChainService::new(
-            state.db.clone(),
-            state.redis.clone(),
-            hiro,
-        )
-        .refresh_balance(user_id)
-        .await;
+        let _ = WalletChainService::new(state.db.clone(), state.redis.clone(), hiro)
+            .refresh_balance(user_id)
+            .await;
     }
 
-    lobbies
-        .remove_participant(lobby_id, user_id, paid)
-        .await?;
+    lobbies.remove_participant(lobby_id, user_id, paid).await?;
     PlayerStateRepo::new(state.redis.clone())
         .delete(lobby_id, user_id)
         .await

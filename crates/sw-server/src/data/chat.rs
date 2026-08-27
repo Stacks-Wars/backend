@@ -1,5 +1,5 @@
-use redis::aio::ConnectionManager;
 use redis::AsyncCommands;
+use redis::aio::ConnectionManager;
 use sw_domain::{LobbyChatMessage, LobbyId};
 
 use crate::error::{AppError, AppResult};
@@ -25,8 +25,7 @@ impl LobbyChatRepo {
     pub async fn append(&self, message: &LobbyChatMessage) -> AppResult<()> {
         let mut redis = self.redis.clone();
         let key = chat_key(message.lobby_id);
-        let payload =
-            serde_json::to_string(message).map_err(|e| AppError::Internal(e.into()))?;
+        let payload = serde_json::to_string(message).map_err(|e| AppError::Internal(e.into()))?;
         redis
             .rpush::<_, _, ()>(&key, payload)
             .await

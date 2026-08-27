@@ -1,7 +1,8 @@
 use std::net::IpAddr;
 use std::sync::Arc;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
+use sw_domain::ChainId;
 
 use crate::services::neon_jwt::{NeonJwtConfig, NeonJwtVerifier};
 
@@ -41,6 +42,12 @@ pub struct Config {
     pub vapid_public_key: Option<String>,
     pub vapid_private_key: Option<String>,
     pub vapid_subject: String,
+    pub solana_rpc_url: String,
+    pub solana_usdc_mint: String,
+    pub solana_vault_program_id: String,
+    /// Wars key pubkey. Used as Solana game-fee fallback when the plugin dev
+    /// has no Solana custodial wallet. Empty → Stacks principal (frontend remaps).
+    pub solana_platform_wallet: String,
 }
 
 impl Config {
@@ -58,16 +65,14 @@ impl Config {
         let database_url = required_env("DATABASE_URL")?;
         let redis_url = required_env("REDIS_URL")?;
 
-        let hiro_api_url = std::env::var("HIRO_API_URL")
-            .unwrap_or_else(|_| "https://api.hiro.so".to_owned());
+        let hiro_api_url =
+            std::env::var("HIRO_API_URL").unwrap_or_else(|_| "https://api.hiro.so".to_owned());
         let hiro_api_key = required_env("HIRO_API_KEY")?;
         let stacks_network =
             std::env::var("STACKS_NETWORK").unwrap_or_else(|_| "mainnet".to_owned());
         let sw_vault_contract = required_env("SW_VAULT_CONTRACT")?;
         if !sw_vault_contract.contains('.') {
-            return Err(anyhow!(
-                "SW_VAULT_CONTRACT must be deployer.contract-name"
-            ));
+            return Err(anyhow!("SW_VAULT_CONTRACT must be deployer.contract-name"));
         }
 
         let neon_auth_base_url = required_env("NEON_AUTH_BASE_URL")?;
@@ -117,15 +122,28 @@ impl Config {
             .map(|s| s.trim().to_owned())
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "mailto:contact@mail.stackswars.com".to_owned());
-        let vapid_subject = if vapid_subject.starts_with("mailto:")
-            || vapid_subject.starts_with("https://")
-        {
-            vapid_subject
-        } else if vapid_subject.contains('@') {
-            format!("mailto:{vapid_subject}")
-        } else {
-            vapid_subject
-        };
+        let vapid_subject =
+            if vapid_subject.starts_with("mailto:") || vapid_subject.starts_with("https://") {
+                vapid_subject
+            } else if vapid_subject.contains('@') {
+                format!("mailto:{vapid_subject}")
+            } else {
+                vapid_subject
+            };
+
+        let solana_rpc_url = std::env::var("SOLANA_RPC_URL")
+            .unwrap_or_else(|_| "https://api.devnet.solana.com".to_owned());
+        let solana_usdc_mint = std::env::var("SOLANA_USDC_MINT").unwrap_or_else(|_| {
+            // Platform test USDC on devnet. Override for mainnet Circle.
+            "2ztYALhLWs2Lg1bGRBje82RgiLhuH4ZbCimRWVeyxUaB".to_owned()
+        });
+        let solana_vault_program_id = std::env::var("SOLANA_VAULT_PROGRAM_ID")
+            .unwrap_or_else(|_| "8NZHj9VH9JkqiAg19CK43ZLuK5hn5jXPBnLfbeKonqfy".to_owned());
+        let solana_platform_wallet = std::env::var("SOLANA_PLATFORM_WALLET")
+            .ok()
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_default();
 
         Ok(Self {
             host,
@@ -146,6 +164,10 @@ impl Config {
             vapid_public_key,
             vapid_private_key,
             vapid_subject,
+            solana_rpc_url,
+            solana_usdc_mint,
+            solana_vault_program_id,
+            solana_platform_wallet,
         })
     }
 
@@ -159,6 +181,16 @@ impl Config {
             .split_once('.')
             .map(|(a, _)| a)
             .unwrap_or(self.sw_vault_contract.as_str())
+    }
+
+    /// Game-fee fallback when the plugin `dev_id` has no wallet on this chain.
+    pub fn fallback_dev_wallet(&self, chain: ChainId) -> String {
+        match chain {
+            ChainId::Solana if !self.solana_platform_wallet.is_empty() => {
+                self.solana_platform_wallet.clone()
+            }
+            _ => self.platform_wallet().to_owned(),
+        }
     }
 }
 

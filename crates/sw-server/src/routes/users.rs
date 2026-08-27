@@ -11,16 +11,17 @@ use crate::data::push::PushSubscriptionRepo;
 use crate::data::seasons::{PgSeasonRepo, SeasonRepo};
 use crate::data::stats::{PgStatsRepo, UserStatLine};
 use crate::data::users::{
-    kms_key_uses_aad, CustodialWalletInput, PgUserRepo, UpdateProfileInput, UpsertUserInput,
-    UserCard,
+    CustodialWalletInput, PgUserRepo, UpdateProfileInput, UpsertUserInput, UserCard,
+    kms_key_uses_aad,
 };
 use crate::data::vault_drafts::{VaultDraft, VaultDraftRepo};
 use crate::error::{AppError, AppResult};
 use crate::services::hiro::HiroClient;
 use crate::services::neon_jwt::parse_neon_sub;
+use crate::services::push;
 use crate::state::AppState;
 use redis::AsyncCommands;
-use sw_domain::{User, UserId};
+use sw_domain::{ChainId, User, UserId};
 
 /// User mutations — Write rate tier.
 pub fn write_router() -> Router<AppState> {
@@ -31,16 +32,14 @@ pub fn write_router() -> Router<AppState> {
         .route("/me/preferences", axum::routing::patch(update_preferences))
         .route("/me/push-subscription", post(save_push_subscription))
         .route("/me/push-subscription", delete(delete_push_subscription))
+        .route("/me/push-notice", post(push_notice))
         .route("/me/vault-drafts", post(save_vault_draft))
         .route(
             "/me/vault-drafts/{kind}/{lobby_path}",
             delete(delete_vault_draft),
         )
         .route("/{user_id}", patch(update_profile))
-        .route(
-            "/{user_id}/custodial-wallet",
-            post(create_custodial_wallet),
-        )
+        .route("/{user_id}/custodial-wallet", post(create_custodial_wallet))
 }
 
 /// User reads — Global tier only.
@@ -50,14 +49,12 @@ pub fn read_router() -> Router<AppState> {
         .route("/by-username/{username}", get(get_user_by_username))
         .route("/username-available/{username}", get(check_username))
         .route("/me/vault-drafts", get(list_vault_drafts))
-        .route(
-            "/me/vault-drafts/{kind}/{lobby_path}",
-            get(get_vault_draft),
-        )
+        .route("/me/vault-drafts/{kind}/{lobby_path}", get(get_vault_draft))
         .route("/{user_id}", get(get_user))
         .route("/{user_id}/profile", get(get_profile))
         .route("/{user_id}/matches", get(get_match_history))
         .route("/{user_id}/custodial-wallet", get(get_custodial_wallet))
+        .route("/{user_id}/custodial-wallets", get(list_custodial_wallets))
 }
 
 /// 3–24 chars, lowercase alphanumeric plus `_` and `-`, must start with a letter.
@@ -99,11 +96,13 @@ struct UpsertUserBody {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CreateCustodialWalletBody {
-    stx_address: String,
+    address: String,
     public_key: String,
-    encrypted_mnemonic: String,
+    encrypted_signing_material: String,
     kms_key_version: String,
     network: String,
+    #[serde(default)]
+    chain: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -114,10 +113,9 @@ struct UserResponse {
     display_name: Option<String>,
     email: String,
     email_verified_at: Option<DateTime<Utc>>,
-    wallet_address: Option<String>,
-    wallet_verified_at: Option<DateTime<Utc>>,
     avatar_url: Option<String>,
     lobby_alerts_enabled: bool,
+    current_chain: ChainId,
     legal_accepted_at: Option<DateTime<Utc>>,
     legal_version: Option<String>,
     created_at: DateTime<Utc>,
@@ -128,6 +126,7 @@ impl UserResponse {
     fn from_user_prefs(user: User, prefs: Option<crate::data::users::UserPrefs>) -> Self {
         let prefs = prefs.unwrap_or(crate::data::users::UserPrefs {
             lobby_alerts_enabled: true,
+            current_chain: ChainId::default(),
             legal_accepted_at: None,
             legal_version: None,
             deleted_at: None,
@@ -138,10 +137,9 @@ impl UserResponse {
             display_name: user.display_name,
             email: user.email,
             email_verified_at: user.email_verified_at,
-            wallet_address: user.wallet_address,
-            wallet_verified_at: user.wallet_verified_at,
             avatar_url: user.avatar_url,
             lobby_alerts_enabled: prefs.lobby_alerts_enabled,
+            current_chain: prefs.current_chain,
             legal_accepted_at: prefs.legal_accepted_at,
             legal_version: prefs.legal_version,
             created_at: user.created_at,
@@ -185,6 +183,12 @@ struct HistoryQuery {
     offset: Option<i64>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct ChainQuery {
+    chain: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct FavouriteGame {
@@ -209,9 +213,10 @@ struct ProfileResponse {
 #[serde(rename_all = "camelCase")]
 struct CustodialWalletResponse {
     user_id: Uuid,
-    stx_address: String,
+    address: String,
     public_key: String,
     network: String,
+    chain: String,
 }
 
 async fn upsert_user(
@@ -299,7 +304,7 @@ async fn check_username(
             return Ok(Json(serde_json::json!({
                 "available": false,
                 "reason": err.to_string(),
-            })))
+            })));
         }
     };
     let available = PgUserRepo::new(state.db.clone())
@@ -319,7 +324,11 @@ async fn update_profile(
 ) -> AppResult<Json<UserResponse>> {
     auth.require_self(user_id)?;
 
-    let username = body.username.as_deref().map(validate_username).transpose()?;
+    let username = body
+        .username
+        .as_deref()
+        .map(validate_username)
+        .transpose()?;
     let display_name = body
         .display_name
         .map(|value| value.trim().to_owned())
@@ -362,8 +371,7 @@ async fn get_profile(
 
     // Two waves of concurrent queries: the rank lookup needs the season id,
     // everything else is independent.
-    let (user, current_season) =
-        tokio::try_join!(users.get_by_id(user_id), seasons.current())?;
+    let (user, current_season) = tokio::try_join!(users.get_by_id(user_id), seasons.current())?;
     let user = user.ok_or(AppError::NotFound("user"))?;
 
     let season_id = current_season.as_ref().map(|season| season.id);
@@ -419,21 +427,49 @@ async fn get_custodial_wallet(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(user_id): Path<Uuid>,
+    Query(query): Query<ChainQuery>,
 ) -> AppResult<Json<CustodialWalletResponse>> {
     auth.require_self(user_id)?;
 
     let repo = PgUserRepo::new(state.db.clone());
+    let chain = ChainId::from_optional(query.chain.as_deref());
+    let chain = chain.as_str();
+
     let wallet = repo
-        .get_custodial_wallet(user_id.into())
+        .get_custodial_wallet(user_id.into(), chain)
         .await?
         .ok_or(AppError::NotFound("custodial wallet"))?;
 
     Ok(Json(CustodialWalletResponse {
         user_id: wallet.user_id,
-        stx_address: wallet.stx_address,
+        address: wallet.address,
         public_key: wallet.public_key,
         network: wallet.network,
+        chain: wallet.chain,
     }))
+}
+
+async fn list_custodial_wallets(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(user_id): Path<Uuid>,
+) -> AppResult<Json<Vec<CustodialWalletResponse>>> {
+    auth.require_self(user_id)?;
+    let wallets = PgUserRepo::new(state.db.clone())
+        .list_custodial_wallets(user_id.into())
+        .await?;
+    Ok(Json(
+        wallets
+            .into_iter()
+            .map(|wallet| CustodialWalletResponse {
+                user_id: wallet.user_id,
+                address: wallet.address,
+                public_key: wallet.public_key,
+                network: wallet.network,
+                chain: wallet.chain,
+            })
+            .collect(),
+    ))
 }
 
 async fn create_custodial_wallet(
@@ -444,9 +480,9 @@ async fn create_custodial_wallet(
 ) -> AppResult<Json<CustodialWalletResponse>> {
     auth.require_self(user_id)?;
 
-    if body.stx_address.trim().is_empty()
+    if body.address.trim().is_empty()
         || body.public_key.trim().is_empty()
-        || body.encrypted_mnemonic.trim().is_empty()
+        || body.encrypted_signing_material.trim().is_empty()
         || body.kms_key_version.trim().is_empty()
         || body.network.trim().is_empty()
     {
@@ -460,25 +496,31 @@ async fn create_custodial_wallet(
         ));
     }
 
+    let chain = ChainId::from_optional(body.chain.as_deref())
+        .as_str()
+        .to_owned();
+
     let repo = PgUserRepo::new(state.db.clone());
     let wallet = repo
         .create_custodial_wallet(
             user_id.into(),
             CustodialWalletInput {
-                stx_address: body.stx_address.trim().to_owned(),
+                address: body.address.trim().to_owned(),
                 public_key: body.public_key.trim().to_owned(),
-                encrypted_mnemonic: body.encrypted_mnemonic.trim().to_owned(),
+                encrypted_signing_material: body.encrypted_signing_material.trim().to_owned(),
                 kms_key_version: body.kms_key_version.trim().to_owned(),
                 network: body.network.trim().to_owned(),
+                chain,
             },
         )
         .await?;
 
     Ok(Json(CustodialWalletResponse {
         user_id: wallet.user_id,
-        stx_address: wallet.stx_address,
+        address: wallet.address,
         public_key: wallet.public_key,
         network: wallet.network,
+        chain: wallet.chain,
     }))
 }
 
@@ -504,6 +546,8 @@ struct SaveVaultDraftBody {
     paid_micro: Option<i64>,
     dev_wallet: Option<String>,
     dev_fee: Option<i64>,
+    dev_id: Option<Uuid>,
+    dev_needs_wallet: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -568,6 +612,8 @@ async fn save_vault_draft(
         paid_micro: body.paid_micro,
         dev_wallet: body.dev_wallet,
         dev_fee: body.dev_fee,
+        dev_id: body.dev_id,
+        dev_needs_wallet: body.dev_needs_wallet,
         created_at: Utc::now().timestamp(),
     };
     VaultDraftRepo::new(state.redis.clone())
@@ -598,9 +644,7 @@ async fn accept_legal(
     auth: AuthUser,
     Json(body): Json<LegalAcceptBody>,
 ) -> AppResult<Json<UserResponse>> {
-    let version = body
-        .version
-        .unwrap_or_else(|| LEGAL_VERSION.to_owned());
+    let version = body.version.unwrap_or_else(|| LEGAL_VERSION.to_owned());
     let repo = PgUserRepo::new(state.db.clone());
     repo.accept_legal(auth.user_id, &version).await?;
     let user = repo
@@ -614,6 +658,7 @@ async fn accept_legal(
 #[serde(rename_all = "camelCase")]
 struct PreferencesBody {
     lobby_alerts_enabled: Option<bool>,
+    current_chain: Option<String>,
 }
 
 async fn update_preferences(
@@ -624,6 +669,10 @@ async fn update_preferences(
     let repo = PgUserRepo::new(state.db.clone());
     if let Some(enabled) = body.lobby_alerts_enabled {
         repo.set_lobby_alerts(auth.user_id, enabled).await?;
+    }
+    if let Some(raw) = body.current_chain {
+        let chain: ChainId = raw.parse().map_err(|e| AppError::BadRequest(e))?;
+        repo.set_current_chain(auth.user_id, chain).await?;
     }
     let user = repo
         .get_by_id(auth.user_id)
@@ -685,13 +734,56 @@ async fn delete_push_subscription(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PushNoticeBody {
+    title: String,
+    body: Option<String>,
+    path: Option<String>,
+}
+
+async fn push_notice(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Json(body): Json<PushNoticeBody>,
+) -> AppResult<Json<serde_json::Value>> {
+    let title = body.title.trim();
+    if title.is_empty() || title.len() > 80 {
+        return Err(AppError::BadRequest("title required".into()));
+    }
+    let notice_body = body
+        .body
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .chars()
+        .take(200)
+        .collect::<String>();
+    let path = body.path.as_deref().unwrap_or("/wallet").trim().to_owned();
+    if !path.starts_with('/') {
+        return Err(AppError::BadRequest("path must be relative".into()));
+    }
+    push::spawn_user_notice(
+        state.push.clone(),
+        state.db.clone(),
+        auth.user_id,
+        title.to_owned(),
+        notice_body,
+        path,
+    );
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
 async fn delete_account(
     State(state): State<AppState>,
     auth: AuthUser,
 ) -> AppResult<Json<serde_json::Value>> {
     let user_id = auth.user_id;
     let repo = PgUserRepo::new(state.db.clone());
-    let prefs = repo.prefs(user_id).await?.ok_or(AppError::NotFound("user"))?;
+    let prefs = repo
+        .prefs(user_id)
+        .await?
+        .ok_or(AppError::NotFound("user"))?;
     if prefs.deleted_at.is_some() {
         return Ok(Json(serde_json::json!({ "ok": true })));
     }
@@ -708,7 +800,11 @@ async fn delete_account(
     }
 
     let mut available_micro: i64 = 0;
-    if repo.get_custodial_wallet(user_id).await?.is_some() {
+    if repo
+        .get_custodial_wallet(user_id, "stacks")
+        .await?
+        .is_some()
+    {
         let hiro = HiroClient::new(
             state.config.hiro_api_url.clone(),
             state.config.hiro_api_key.clone(),
@@ -724,7 +820,16 @@ async fn delete_account(
         .get_balance(user_id)
         .await
         {
-            available_micro = bal.available_micro;
+            available_micro = available_micro.saturating_add(bal.available_micro);
+        }
+    }
+    if repo
+        .get_custodial_wallet(user_id, "solana")
+        .await?
+        .is_some()
+    {
+        if let Ok(bal) = crate::services::solana_chain::get_balance(&state, user_id).await {
+            available_micro = available_micro.saturating_add(bal.available_micro);
         }
     }
 
@@ -751,6 +856,8 @@ async fn delete_account(
             state.db.clone(),
             lobby.creator_id,
             lobby.path.clone(),
+            lobby.chain,
+            lobby.entry_amount_micro,
         );
         let _ = lobbies.delete(lobby.id).await;
     }

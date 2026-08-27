@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::{GameId, LobbyId, UserId};
+use crate::{ChainId, GameId, LobbyId, UserId};
 
 /// Lobby lifecycle (Postgres + Redis).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,6 +53,8 @@ pub struct Lobby {
     pub description: Option<String>,
     pub game_id: GameId,
     pub creator_id: UserId,
+    #[serde(default)]
+    pub chain: ChainId,
     /// Per-player entry fee in micro-USDCx (0 = free).
     pub entry_amount_micro: i64,
     /// Running pot in micro-USDCx (sum of reserved entries while waiting / in play).

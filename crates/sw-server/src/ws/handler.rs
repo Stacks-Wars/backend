@@ -1,24 +1,26 @@
 use std::sync::Arc;
 
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::Router;
 use axum::extract::State;
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::IntoResponse;
 use axum::routing::get;
-use axum::Router;
 use futures::{SinkExt, StreamExt};
 use tracing::{debug, info};
 use uuid::Uuid;
 
-use super::protocol::{ClientMessage, Envelope, ServerMessage, APP_TOPIC};
+use super::protocol::{
+    ALL_FEED_TOPIC, APP_TOPIC, ClientMessage, Envelope, ServerMessage, parse_chain_feed_topic,
+};
 use super::subscription::SubscribeError;
 use crate::data::chat::LobbyChatRepo;
 use crate::data::lobbies::PgLobbyRepo;
 use crate::data::users::PgUserRepo;
 use crate::engine::DispatchError;
-use crate::middleware::rate_limit::{check_ws_connect, rate_limited_response, ClientIp};
+use crate::middleware::rate_limit::{ClientIp, check_ws_connect, rate_limited_response};
 use crate::services::realtime;
 use crate::state::AppState;
-use sw_domain::{sanitize_chat_body, LobbyChatMessage, LobbyId, UserId};
+use sw_domain::{LobbyChatMessage, LobbyId, UserId, sanitize_chat_body};
 
 pub fn router() -> Router<AppState> {
     Router::new().route("/app", get(upgrade))
@@ -143,10 +145,9 @@ async fn handle_text(state: &AppState, connection_id: Uuid, text: &str) {
                 return;
             };
             if let Err(err) = authorize_subscribe(state, connection_id, &topic) {
-                let _ = state.sessions.send(
-                    connection_id,
-                    ServerMessage::error("unauthorized", err),
-                );
+                let _ = state
+                    .sessions
+                    .send(connection_id, ServerMessage::error("unauthorized", err));
                 return;
             }
             match state.subscriptions.subscribe(connection_id, &topic) {
@@ -159,8 +160,7 @@ async fn handle_text(state: &AppState, connection_id: Uuid, text: &str) {
                     // the full snapshot, then tell the room someone arrived.
                     if let Some(lobby_id) = realtime::parse_lobby_topic(&topic) {
                         let viewer = state.sessions.user_id(connection_id);
-                        realtime::send_lobby_snapshot(state, connection_id, lobby_id, viewer)
-                            .await;
+                        realtime::send_lobby_snapshot(state, connection_id, lobby_id, viewer).await;
                         realtime::publish_presence(state, lobby_id);
                     }
                 }
@@ -222,9 +222,10 @@ async fn handle_text(state: &AppState, connection_id: Uuid, text: &str) {
             }
 
             if let Err(err) = engine.send_action(user_id, action) {
-                let _ = state
-                    .sessions
-                    .send(connection_id, ServerMessage::error("engine_busy", err.as_str()));
+                let _ = state.sessions.send(
+                    connection_id,
+                    ServerMessage::error("engine_busy", err.as_str()),
+                );
             }
         }
         ClientMessage::GameQuit { lobby_id } => {
@@ -249,11 +250,7 @@ async fn handle_text(state: &AppState, connection_id: Uuid, text: &str) {
 
 /// Expand the `lobbyPath:{path}` alias into the canonical `lobby:{uuid}` topic
 /// so a client holding only a share link can subscribe without an HTTP lookup.
-async fn resolve_topic(
-    state: &AppState,
-    connection_id: Uuid,
-    topic: String,
-) -> Option<String> {
+async fn resolve_topic(state: &AppState, connection_id: Uuid, topic: String) -> Option<String> {
     let Some(path) = topic.strip_prefix("lobbyPath:") else {
         return Some(topic);
     };
@@ -276,10 +273,7 @@ fn require_auth(state: &AppState, connection_id: Uuid, action: &str) -> Option<U
         None => {
             let _ = state.sessions.send(
                 connection_id,
-                ServerMessage::error(
-                    "unauthorized",
-                    format!("authenticate before {action}"),
-                ),
+                ServerMessage::error("unauthorized", format!("authenticate before {action}")),
             );
             None
         }
@@ -301,9 +295,10 @@ async fn handle_chat(
     let lobby = match PgLobbyRepo::new(state.db.clone()).get_by_id(lobby_id).await {
         Ok(Some(lobby)) => lobby,
         _ => {
-            let _ = state
-                .sessions
-                .send(connection_id, ServerMessage::error("not_found", "lobby not found"));
+            let _ = state.sessions.send(
+                connection_id,
+                ServerMessage::error("not_found", "lobby not found"),
+            );
             return;
         }
     };
@@ -330,7 +325,10 @@ async fn handle_chat(
         body,
     );
 
-    if let Err(err) = LobbyChatRepo::new(state.redis.clone()).append(&message).await {
+    if let Err(err) = LobbyChatRepo::new(state.redis.clone())
+        .append(&message)
+        .await
+    {
         debug!(%lobby_id, error = %err, "failed to persist chat message");
     }
     realtime::publish_chat(state, &message);
@@ -341,7 +339,11 @@ fn authorize_subscribe(
     connection_id: Uuid,
     topic: &str,
 ) -> Result<(), &'static str> {
-    if topic == APP_TOPIC || topic.starts_with("lobby:") {
+    if topic == APP_TOPIC
+        || topic == ALL_FEED_TOPIC
+        || parse_chain_feed_topic(topic).is_some()
+        || topic.starts_with("lobby:")
+    {
         return Ok(());
     }
     if let Some(rest) = topic.strip_prefix("user:") {
@@ -356,7 +358,7 @@ fn authorize_subscribe(
         }
         return Ok(());
     }
-    Ok(())
+    Err("unknown topic")
 }
 
 fn cleanup(state: &AppState, connection_id: Uuid) {

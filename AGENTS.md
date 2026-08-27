@@ -28,7 +28,7 @@ Game engines live in separate crates (crates.io `sw_*`), not inside `sw-server` 
 - Keep handler functions boring: extract, call a service, return JSON. Business rules go in `services/` or `data/`.
 - Logging is tracing with structured fields (`lobby_id`, `user_id`, `path`). Do not format those into the message string.
 - Schema changes are new files under `backend/migrations/`. Use the existing SQLx patterns. No second ORM.
-- Redis is seats, cache, and short-lived coordination. Hiro FT is the source of truth for balances.
+- Redis is seats, cache, and short-lived coordination. Individual official chain explorers are the source of truth for balances.
 
 ## WebSocket
 
@@ -42,6 +42,23 @@ Game engines live in separate crates (crates.io `sw_*`), not inside `sw-server` 
 - Settle via `complete_match` → claim intents → client vault claim. Do not add a second payout path.
 - Respect fee and entry limits in server config.
 - Chain-specific code (Hiro, Stacks principals, vault function names) stays behind the host / a chain adapter. Games and HTTP routes should not grow a second chain's types inline.
+
+## Solana MCP
+
+For Solana-related work, prefer the Solana Developer MCP tools over model memory.
+
+Use `list_sections` first for non-trivial Solana questions so you can find the
+right documentation source ids and section ids.
+
+Use `get_documentation` when you need canonical docs for a specific source,
+framework, library, or ecosystem area. Use `Solana_Documentation_Search` or
+`Solana_Expert__Ask_For_Help` for narrow how-to questions, errors, or API usage.
+
+Whenever you write or modify Solana program Rust, call `program_autofixer` before
+returning code. It accepts `code`, optional `filename`, and optional `framework`
+(`auto`, `anchor`, or `pinocchio`). Apply the suggested fixes, then call
+`program_autofixer` again. Repeat until `require_another_tool_call_after_fixing`
+is false.
 
 ## Janitors
 

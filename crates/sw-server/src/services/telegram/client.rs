@@ -1,8 +1,8 @@
 //! Minimal Telegram Bot API client over reqwest.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tracing::warn;
 
 #[derive(Debug, Clone)]
@@ -50,11 +50,7 @@ impl TelegramClient {
         }
     }
 
-    async fn call<T: for<'de> Deserialize<'de>>(
-        &self,
-        method: &str,
-        body: Value,
-    ) -> Result<T> {
+    async fn call<T: for<'de> Deserialize<'de>>(&self, method: &str, body: Value) -> Result<T> {
         let url = format!("{}/{method}", self.base);
         let resp = self
             .http
@@ -120,12 +116,7 @@ impl TelegramClient {
         Ok(())
     }
 
-    pub async fn edit_message_text(
-        &self,
-        chat_id: i64,
-        message_id: i64,
-        text: &str,
-    ) -> Result<()> {
+    pub async fn edit_message_text(&self, chat_id: i64, message_id: i64, text: &str) -> Result<()> {
         let _: Value = self
             .call(
                 "editMessageText",
@@ -178,7 +169,9 @@ pub async fn run_command_loop(
         for update in updates {
             offset = offset.max(update.update_id + 1);
             let Some(msg) = update.message else { continue };
-            let Some(text) = msg.text.as_deref() else { continue };
+            let Some(text) = msg.text.as_deref() else {
+                continue;
+            };
             let cmd = text.split_whitespace().next().unwrap_or("");
             let cmd = cmd.split('@').next().unwrap_or(cmd).to_ascii_lowercase();
             match cmd.as_str() {
@@ -187,9 +180,7 @@ pub async fn run_command_loop(
                     let state = state.clone();
                     let notifier = notifier.clone();
                     tokio::spawn(async move {
-                        if let Err(err) =
-                            notifier.reply_leaderboard(&state, reply_chat).await
-                        {
+                        if let Err(err) = notifier.reply_leaderboard(&state, reply_chat).await {
                             warn!(error = %err, "telegram /leaderboard failed");
                         }
                     });

@@ -1,8 +1,8 @@
 //! On-chain custodial balance + activity (Hiro), Redis-cached for UI reads.
 
 use chrono::Utc;
-use redis::aio::ConnectionManager;
 use redis::AsyncCommands;
+use redis::aio::ConnectionManager;
 use sw_domain::{ChainActivityItem, UserId, WalletBalance};
 
 use crate::config::BALANCE_CACHE_SECS;
@@ -53,13 +53,14 @@ impl WalletChainService {
     /// Validation / post-tx — always Hiro, then rewrite Redis.
     pub async fn refresh_balance(&self, user_id: UserId) -> AppResult<WalletBalance> {
         let wallet = PgUserRepo::new(self.pool.clone())
-            .get_custodial_wallet(user_id)
+            .get_custodial_wallet(user_id, "stacks")
             .await?
             .ok_or(AppError::NotFound("custodial wallet not found"))?;
-        let available_micro = self.hiro.get_ft_balance(&wallet.stx_address).await?;
+        let available_micro = self.hiro.get_ft_balance(&wallet.address).await?;
         let bal = WalletBalance {
             user_id,
-            stx_address: wallet.stx_address,
+            address: wallet.address,
+            chain: wallet.chain.parse().unwrap_or_default(),
             available_micro,
             updated_at: Utc::now(),
             cached: false,
@@ -67,9 +68,7 @@ impl WalletChainService {
         let mut redis = self.redis.clone();
         let key = Self::balance_key(user_id);
         let payload = serde_json::to_string(&bal).unwrap_or_default();
-        let _: Result<(), _> = redis
-            .set_ex(key, payload, BALANCE_CACHE_SECS.max(1))
-            .await;
+        let _: Result<(), _> = redis.set_ex(key, payload, BALANCE_CACHE_SECS.max(1)).await;
         Ok(bal)
     }
 
@@ -79,17 +78,13 @@ impl WalletChainService {
         Ok(())
     }
 
-    pub async fn activity(
-        &self,
-        user_id: UserId,
-        limit: u32,
-    ) -> AppResult<Vec<ChainActivityItem>> {
+    pub async fn activity(&self, user_id: UserId, limit: u32) -> AppResult<Vec<ChainActivityItem>> {
         let wallet = PgUserRepo::new(self.pool.clone())
-            .get_custodial_wallet(user_id)
+            .get_custodial_wallet(user_id, "stacks")
             .await?
             .ok_or(AppError::NotFound("custodial wallet not found"))?;
         self.hiro
-            .list_activity(&wallet.stx_address, limit.clamp(1, 100))
+            .list_activity(&wallet.address, limit.clamp(1, 100))
             .await
     }
 

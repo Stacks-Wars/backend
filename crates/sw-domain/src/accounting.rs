@@ -1,4 +1,4 @@
-//! On-chain wallet DTOs (no ledger). Balance SoT is Hiro FT balance.
+//! On-chain wallet DTOs (no ledger). Balance SoT is each chain's official explorer / RPC.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -10,7 +10,9 @@ use crate::UserId;
 #[serde(rename_all = "camelCase")]
 pub struct WalletBalance {
     pub user_id: UserId,
-    pub stx_address: String,
+    pub address: String,
+    #[serde(default)]
+    pub chain: crate::ChainId,
     pub available_micro: i64,
     pub updated_at: DateTime<Utc>,
     /// True when served from Redis cache.

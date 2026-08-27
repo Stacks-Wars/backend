@@ -1,8 +1,8 @@
 //! Pending vault txs that confirmed on-chain before the matching lobby API
 //! call finished. Lets a retry reuse the txid instead of broadcasting again.
 
-use redis::aio::ConnectionManager;
 use redis::AsyncCommands;
+use redis::aio::ConnectionManager;
 use serde::{Deserialize, Serialize};
 use sw_domain::UserId;
 use uuid::Uuid;
@@ -32,6 +32,8 @@ pub struct VaultDraft {
     pub paid_micro: Option<i64>,
     pub dev_wallet: Option<String>,
     pub dev_fee: Option<i64>,
+    pub dev_id: Option<Uuid>,
+    pub dev_needs_wallet: Option<bool>,
     pub created_at: i64,
 }
 
@@ -59,13 +61,8 @@ impl VaultDraftRepo {
 
     pub async fn save(&self, draft: &VaultDraft) -> AppResult<()> {
         let mut redis = self.redis.clone();
-        let key = Self::key(
-            UserId::from(draft.user_id),
-            &draft.kind,
-            &draft.lobby_path,
-        );
-        let payload =
-            serde_json::to_string(draft).map_err(|e| AppError::Internal(e.into()))?;
+        let key = Self::key(UserId::from(draft.user_id), &draft.kind, &draft.lobby_path);
+        let payload = serde_json::to_string(draft).map_err(|e| AppError::Internal(e.into()))?;
         redis
             .set_ex::<_, _, ()>(&key, payload, TTL_SECS as u64)
             .await
@@ -163,12 +160,7 @@ impl VaultDraftRepo {
         Ok(drafts)
     }
 
-    pub async fn delete(
-        &self,
-        user_id: UserId,
-        kind: &str,
-        lobby_path: &str,
-    ) -> AppResult<()> {
+    pub async fn delete(&self, user_id: UserId, kind: &str, lobby_path: &str) -> AppResult<()> {
         let mut redis = self.redis.clone();
         let key = Self::key(user_id, kind, lobby_path);
         let index = Self::index_key(user_id);

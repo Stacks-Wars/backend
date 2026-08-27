@@ -23,7 +23,7 @@ Clients live in a separate frontend. This repository does **not** depend on thos
 
 Optional Telegram companion: set both `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` to announce public lobbies, post match results, and serve `/leaderboard`. `FRONTEND_URL` controls deep links (default `https://stackswars.com`).
 
-SQL migrations live in `migrations/`. App users are upserted via `POST /users` (Bearer JWT; `id` = Neon `sub`). Custodial wallets live under `GET|POST /users/{id}/custodial-wallet`. Platform balances use `/wallet` (Hiro FT balance + Redis cache, chain activity, withdrawals) — vault escrow is on-chain via `SW_VAULT_CONTRACT`. Admin season routes require a verified JWT email on the `ADMIN` allowlist.
+SQL migrations live in `migrations/`. App users are upserted via `POST /users` (Bearer JWT; `id` = Neon `sub`). Custodial wallets live under `GET|POST /users/{id}/custodial-wallet`. Platform balances use `/wallet` (each chain's official explorer / RPC + Redis cache, chain activity, withdrawals) — vault escrow is on-chain via `SW_VAULT_CONTRACT`. Admin season routes require a verified JWT email on the `ADMIN` allowlist.
 
 ```
 clients ──HTTP/WS──► sw-server ──hosts──► GameEngine (from plugin crates)
@@ -31,7 +31,7 @@ clients ──HTTP/WS──► sw-server ──hosts──► GameEngine (from p
                          │                      └── calls GameHost (broadcast, save, finish)
                          ├── Postgres (users, lobbies, seasons)
                          ├── Redis (lobby runtime, balance cache)
-                         └── Hiro (FT balance, tx status, call-read)
+                         └── chain explorers / RPC (balance, tx status)
 ```
 
 ## Game plugin system

@@ -17,10 +17,7 @@ impl<'a> VaultReader<'a> {
     }
 
     pub async fn has_joined(&self, path: &str, player: &str) -> AppResult<bool> {
-        let args = vec![
-            encode_string_ascii(path)?,
-            encode_principal(player)?,
-        ];
+        let args = vec![encode_string_ascii(path)?, encode_principal(player)?];
         let res = self
             .hiro
             .call_read(self.vault_contract, "has-joined", player, &args)
@@ -29,10 +26,7 @@ impl<'a> VaultReader<'a> {
     }
 
     pub async fn get_paid(&self, path: &str, player: &str) -> AppResult<Option<i64>> {
-        let args = vec![
-            encode_string_ascii(path)?,
-            encode_principal(player)?,
-        ];
+        let args = vec![encode_string_ascii(path)?, encode_principal(player)?];
         let res = self
             .hiro
             .call_read(self.vault_contract, "get-paid", player, &args)
@@ -123,9 +117,8 @@ fn hex_decode(hex: &str) -> AppResult<Vec<u8>> {
     (0..hex.len())
         .step_by(2)
         .map(|i| {
-            u8::from_str_radix(&hex[i..i + 2], 16).map_err(|e| {
-                AppError::Internal(anyhow::anyhow!("invalid clarity hex byte: {e}"))
-            })
+            u8::from_str_radix(&hex[i..i + 2], 16)
+                .map_err(|e| AppError::Internal(anyhow::anyhow!("invalid clarity hex byte: {e}")))
         })
         .collect()
 }
@@ -179,10 +172,7 @@ fn parse_optional_uint(result: &serde_json::Value) -> AppResult<Option<i64>> {
     if result.get("okay").and_then(|v| v.as_bool()) == Some(false) {
         return Err(AppError::BadRequest("vault call-read failed".into()));
     }
-    let repr = result
-        .get("result")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let repr = result.get("result").and_then(|v| v.as_str()).unwrap_or("");
     let normalized = repr.trim().to_ascii_lowercase();
     if normalized == "0x09" || normalized.contains("none") {
         return Ok(None);
@@ -238,9 +228,7 @@ fn c32_decode(input: &str) -> AppResult<Vec<u8>> {
 fn serialize_principal(address: &str) -> AppResult<String> {
     let address = address.to_uppercase();
     if address.len() < 5 || !address.starts_with('S') {
-        return Err(AppError::BadRequest(
-            "invalid Stacks address format".into(),
-        ));
+        return Err(AppError::BadRequest("invalid Stacks address format".into()));
     }
 
     let version_char = address.chars().nth(1).unwrap();

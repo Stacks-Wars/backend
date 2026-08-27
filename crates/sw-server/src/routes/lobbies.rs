@@ -3,24 +3,25 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sw_domain::{
-    GameId, JoinRequestState, Lobby, LobbyId, LobbyState, LobbyStatus, PlayerState, UserId,
+    ChainId, GameId, JoinRequestState, Lobby, LobbyId, LobbyState, LobbyStatus, PlayerState,
+    UserId, WalletBalance,
 };
 use sw_plugin::EngineContext;
 use uuid::Uuid;
 
-use crate::config::{MIN_ENTRY_MICRO, USDCX_ASSET_NAME, USDCX_CONTRACT};
 use crate::auth::AuthUser;
+use crate::config::{MIN_ENTRY_MICRO, USDCX_ASSET_NAME, USDCX_CONTRACT};
 use crate::data::join_requests::{JoinRequest, JoinRequestRepo};
-use crate::data::lobbies::{generate_unique_lobby_path, LobbyQuery, PgLobbyRepo};
-use crate::data::seat_holds::SeatHoldRepo;
-use crate::services::realtime;
+use crate::data::lobbies::{LobbyQuery, PgLobbyRepo, generate_unique_lobby_path};
 use crate::data::lobby_runtime::{LobbyStateRepo, PlayerStateRepo};
+use crate::data::seat_holds::SeatHoldRepo;
 use crate::data::users::PgUserRepo;
 use crate::error::{AppError, AppResult};
 use crate::host::ServerGameHost;
 use crate::services::hiro::HiroClient;
+use crate::services::realtime;
 use crate::services::vault_verify::VaultReader;
 use crate::services::wallet_chain::WalletChainService;
 use crate::state::AppState;
@@ -95,28 +96,85 @@ fn vault_reader<'a>(state: &'a AppState, hiro: &'a HiroClient) -> VaultReader<'a
     VaultReader::new(hiro, &state.config.sw_vault_contract)
 }
 
-async fn custodial_address(state: &AppState, user_id: UserId) -> AppResult<String> {
+async fn verify_vault_join(
+    state: &AppState,
+    chain: ChainId,
+    path: &str,
+    player: &str,
+    paid: i64,
+    txid: &str,
+) -> AppResult<()> {
+    match chain {
+        ChainId::Solana => crate::services::solana_vault::assert_tx_ok(state, txid).await,
+        _ => {
+            let hiro = hiro_client(state);
+            let reader = vault_reader(state, &hiro);
+            reader.assert_joined(path, player, paid, txid).await
+        }
+    }
+}
+
+async fn verify_vault_leave(
+    state: &AppState,
+    chain: ChainId,
+    path: &str,
+    player: &str,
+    txid: &str,
+) -> AppResult<()> {
+    match chain {
+        ChainId::Solana => crate::services::solana_vault::assert_tx_ok(state, txid).await,
+        _ => {
+            let hiro = hiro_client(state);
+            let reader = vault_reader(state, &hiro);
+            reader.assert_not_joined(path, player, txid).await
+        }
+    }
+}
+
+async fn verify_vault_claim(state: &AppState, chain: ChainId, txid: &str) -> AppResult<()> {
+    match chain {
+        ChainId::Solana => crate::services::solana_vault::assert_tx_ok(state, txid).await,
+        _ => {
+            let hiro = hiro_client(state);
+            let reader = vault_reader(state, &hiro);
+            reader.assert_claim_tx(txid).await
+        }
+    }
+}
+
+async fn custodial_address(state: &AppState, user_id: UserId, chain: &str) -> AppResult<String> {
     PgUserRepo::new(state.db.clone())
-        .get_custodial_wallet(user_id)
+        .get_custodial_wallet(user_id, chain)
         .await?
-        .map(|w| w.stx_address)
+        .map(|w| w.address)
         .ok_or(AppError::NotFound("custodial wallet not found"))
 }
 
-/// Post-vault / money path: re-read Hiro, rewrite Redis, push to the user topic.
-async fn refresh_user_balance(state: &AppState, user_id: UserId) {
-    let svc = WalletChainService::new(
-        state.db.clone(),
-        state.redis.clone(),
-        hiro_client(state),
-    );
-    if let Ok(bal) = svc.refresh_balance(user_id).await {
+/// Post-vault / money path: re-read chain, rewrite Redis (Stacks), push WS.
+async fn fresh_wallet_balance(
+    state: &AppState,
+    user_id: UserId,
+    chain: ChainId,
+) -> AppResult<WalletBalance> {
+    match chain {
+        ChainId::Solana => crate::services::solana_chain::get_balance(state, user_id).await,
+        _ => {
+            let svc =
+                WalletChainService::new(state.db.clone(), state.redis.clone(), hiro_client(state));
+            svc.refresh_balance(user_id).await
+        }
+    }
+}
+
+async fn refresh_user_balance(state: &AppState, user_id: UserId, chain: ChainId) {
+    if let Ok(bal) = fresh_wallet_balance(state, user_id, chain).await {
         realtime::publish_wallet_balance(
             state,
             user_id,
             json!({
                 "availableMicro": bal.available_micro,
-                "stxAddress": bal.stx_address,
+                "address": bal.address,
+                "chain": chain.as_str(),
             }),
         );
     }
@@ -138,6 +196,8 @@ struct CreateLobbyBody {
     path: Option<String>,
     #[serde(default)]
     vault_txid: Option<String>,
+    #[serde(default)]
+    chain: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -189,6 +249,7 @@ struct ListLobbiesQuery {
     include_private: Option<bool>,
     limit: Option<i64>,
     offset: Option<i64>,
+    chain: Option<String>,
 }
 
 fn parse_status_list(raw: &str) -> Option<Vec<LobbyStatus>> {
@@ -243,6 +304,12 @@ async fn list_lobbies(
             Some(false) => Some(false),
             _ => None,
         },
+        chain: params
+            .chain
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| ChainId::from_optional(Some(s)).to_string()),
         limit: params.limit.unwrap_or(60).clamp(1, 200),
         offset: params.offset.unwrap_or(0).max(0),
     };
@@ -256,18 +323,13 @@ async fn create_lobby(
     auth: AuthUser,
     Json(body): Json<CreateLobbyBody>,
 ) -> AppResult<Json<LobbyResponse>> {
-
     let name = body.name.trim().to_owned();
     if name.is_empty() || name.len() > 80 {
-        return Err(AppError::BadRequest(
-            "name must be 1–80 characters".into(),
-        ));
+        return Err(AppError::BadRequest("name must be 1–80 characters".into()));
     }
     let entry = body.entry_amount_micro;
     if entry < 0 {
-        return Err(AppError::BadRequest(
-            "entryAmountMicro must be >= 0".into(),
-        ));
+        return Err(AppError::BadRequest("entryAmountMicro must be >= 0".into()));
     }
     if entry > 0 && entry < MIN_ENTRY_MICRO {
         return Err(AppError::BadRequest(format!(
@@ -288,7 +350,12 @@ async fn create_lobby(
         .ok_or(AppError::NotFound("creator user not found"))?;
 
     let lobbies = PgLobbyRepo::new(state.db.clone());
-    let path = match body.path.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    let path = match body
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         Some(p) => {
             if p.len() > 64
                 || !p
@@ -307,16 +374,25 @@ async fn create_lobby(
         None => generate_unique_lobby_path(&lobbies).await?,
     };
 
+    let chain: ChainId = body
+        .chain
+        .as_deref()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_default();
     let needs_vault = entry > 0;
     let vault_txid = require_vault_txid(body.vault_txid.as_deref(), needs_vault)?;
     if needs_vault {
-        let addr = custodial_address(&state, creator_id).await?;
-        let hiro = hiro_client(&state);
-        let reader = vault_reader(&state, &hiro);
-        reader
-            .assert_joined(&path, &addr, entry, vault_txid.as_deref().unwrap())
-            .await?;
-        refresh_user_balance(&state, creator_id).await;
+        let addr = custodial_address(&state, creator_id, chain.as_str()).await?;
+        verify_vault_join(
+            &state,
+            chain,
+            &path,
+            &addr,
+            entry,
+            vault_txid.as_deref().unwrap(),
+        )
+        .await?;
+        refresh_user_balance(&state, creator_id, chain).await;
     }
 
     let now = Utc::now();
@@ -331,6 +407,7 @@ async fn create_lobby(
             .filter(|d| !d.is_empty()),
         game_id,
         creator_id,
+        chain,
         entry_amount_micro: entry,
         pot_micro: entry,
         is_private: body.is_private,
@@ -363,6 +440,8 @@ async fn create_lobby(
         lobby.name.clone(),
         lobby.path.clone(),
         lobby.game_id.as_str().to_owned(),
+        lobby.chain,
+        lobby.entry_amount_micro,
     );
 
     Ok(Json(LobbyResponse {
@@ -555,27 +634,32 @@ async fn join_lobby(
     };
     let vault_txid = require_vault_txid(body.vault_txid.as_deref(), needs_vault)?;
     if needs_vault {
-        let addr = custodial_address(&state, user_id).await?;
-        let hiro = hiro_client(&state);
-        let reader = vault_reader(&state, &hiro);
-        if let Err(err) = reader
-            .assert_joined(&lobby.path, &addr, paid, vault_txid.as_deref().unwrap())
-            .await
+        let addr = custodial_address(&state, user_id, lobby.chain.as_str()).await?;
+        if let Err(err) = verify_vault_join(
+            &state,
+            lobby.chain,
+            &lobby.path,
+            &addr,
+            paid,
+            vault_txid.as_deref().unwrap(),
+        )
+        .await
         {
             let _ = seats.release(lobby_id, user_id).await;
             return Err(err);
         }
-        if let Ok(pot) = reader.get_pot(&lobby.path, &addr).await {
-            lobby.pot_micro = pot;
+        if lobby.chain != ChainId::Solana {
+            let hiro = hiro_client(&state);
+            let reader = vault_reader(&state, &hiro);
+            if let Ok(pot) = reader.get_pot(&lobby.path, &addr).await {
+                lobby.pot_micro = pot;
+            }
         }
-        refresh_user_balance(&state, user_id).await;
+        refresh_user_balance(&state, user_id, lobby.chain).await;
     }
 
     let pot_delta = if lobby.is_sponsored { 0 } else { entry };
-    if let Err(err) = lobbies
-        .add_participant(lobby_id, user_id, pot_delta)
-        .await
-    {
+    if let Err(err) = lobbies.add_participant(lobby_id, user_id, pot_delta).await {
         let _ = seats.release(lobby_id, user_id).await;
         return Err(err);
     }
@@ -645,7 +729,9 @@ async fn create_join_request(
         return Err(AppError::Conflict("already in lobby".into()));
     }
     if user_id == lobby.creator_id {
-        return Err(AppError::BadRequest("creator is already in the lobby".into()));
+        return Err(AppError::BadRequest(
+            "creator is already in the lobby".into(),
+        ));
     }
 
     let user = PgUserRepo::new(state.db.clone())
@@ -770,20 +856,22 @@ async fn leave_lobby(
     };
     let vault_txid = require_vault_txid(body.vault_txid.as_deref(), needs_vault)?;
     if needs_vault {
-        let addr = custodial_address(&state, user_id).await?;
-        let hiro = hiro_client(&state);
-        let reader = vault_reader(&state, &hiro);
-        reader
-            .assert_not_joined(&lobby.path, &addr, vault_txid.as_deref().unwrap())
-            .await?;
-        refresh_user_balance(&state, user_id).await;
+        let addr = custodial_address(&state, user_id, lobby.chain.as_str()).await?;
+        verify_vault_leave(
+            &state,
+            lobby.chain,
+            &lobby.path,
+            &addr,
+            vault_txid.as_deref().unwrap(),
+        )
+        .await?;
+        refresh_user_balance(&state, user_id, lobby.chain).await;
     }
 
     // Host alone → refund already on-chain; tear down the lobby entirely.
     let host_closing = lobby.creator_id == user_id && lobby.participants.len() == 1;
     if host_closing {
-        let mut closed =
-            crate::services::lobby_ttl::expire_lobby(&state, lobby_id).await?;
+        let mut closed = crate::services::lobby_ttl::expire_lobby(&state, lobby_id).await?;
         closed.participants.clear();
         return Ok(Json(LobbyResponse {
             lobby: closed,
@@ -792,9 +880,7 @@ async fn leave_lobby(
         }));
     }
 
-    lobbies
-        .remove_participant(lobby_id, user_id, paid)
-        .await?;
+    lobbies.remove_participant(lobby_id, user_id, paid).await?;
     PlayerStateRepo::new(state.redis.clone())
         .delete(lobby_id, user_id)
         .await
@@ -859,8 +945,8 @@ async fn get_kick_target_address(
         return Err(AppError::NotFound("target not in lobby"));
     }
 
-    let address = custodial_address(&state, target).await?;
-    Ok(Json(serde_json::json!({ "stxAddress": address })))
+    let address = custodial_address(&state, target, lobby.chain.as_str()).await?;
+    Ok(Json(serde_json::json!({ "address": address })))
 }
 
 async fn kick_lobby_player(
@@ -904,18 +990,19 @@ async fn kick_lobby_player(
     };
     let vault_txid = require_vault_txid(body.vault_txid.as_deref(), needs_vault)?;
     if needs_vault {
-        let addr = custodial_address(&state, target).await?;
-        let hiro = hiro_client(&state);
-        let reader = vault_reader(&state, &hiro);
-        reader
-            .assert_not_joined(&lobby.path, &addr, vault_txid.as_deref().unwrap())
-            .await?;
-        refresh_user_balance(&state, target).await;
+        let addr = custodial_address(&state, target, lobby.chain.as_str()).await?;
+        verify_vault_leave(
+            &state,
+            lobby.chain,
+            &lobby.path,
+            &addr,
+            vault_txid.as_deref().unwrap(),
+        )
+        .await?;
+        refresh_user_balance(&state, target, lobby.chain).await;
     }
 
-    lobbies
-        .remove_participant(lobby_id, target, paid)
-        .await?;
+    lobbies.remove_participant(lobby_id, target, paid).await?;
     PlayerStateRepo::new(state.redis.clone())
         .delete(lobby_id, target)
         .await
@@ -959,22 +1046,18 @@ async fn confirm_vault_claim(
         return Err(AppError::BadRequest("vaultTxid required".into()));
     }
     if body.amount_micro <= 0 {
-        return Err(AppError::BadRequest(
-            "amountMicro must be positive".into(),
-        ));
+        return Err(AppError::BadRequest("amountMicro must be positive".into()));
     }
     let _lobby = PgLobbyRepo::new(state.db.clone())
         .get_by_id(lobby_id)
         .await?
         .ok_or(AppError::NotFound("lobby not found"))?;
 
-    let hiro = hiro_client(&state);
-    let reader = vault_reader(&state, &hiro);
-    reader.assert_claim_tx(txid).await?;
+    verify_vault_claim(&state, _lobby.chain, txid).await?;
 
     let user_id = auth.user_id;
-    let svc = WalletChainService::new(state.db.clone(), state.redis.clone(), hiro);
-    let bal = svc.refresh_balance(user_id).await?;
+    let chain = _lobby.chain;
+    let bal = fresh_wallet_balance(&state, user_id, chain).await?;
     let _ = crate::data::lobby_finished::LobbyFinishedRepo::new(state.redis.clone())
         .mark_claimed(lobby_id)
         .await;
@@ -983,7 +1066,8 @@ async fn confirm_vault_claim(
         user_id,
         json!({
             "availableMicro": bal.available_micro,
-            "stxAddress": bal.stx_address,
+            "address": bal.address,
+            "chain": chain.as_str(),
             "payoutMicro": body.amount_micro,
         }),
     );
@@ -1075,14 +1159,9 @@ async fn start_lobby(
         .list(lobby_id)
         .await?;
     if !players.iter().all(|p| p.ready || p.is_creator) {
-        let others_ready = players
-            .iter()
-            .filter(|p| !p.is_creator)
-            .all(|p| p.ready);
+        let others_ready = players.iter().filter(|p| !p.is_creator).all(|p| p.ready);
         if !others_ready {
-            return Err(AppError::BadRequest(
-                "all players must be ready".into(),
-            ));
+            return Err(AppError::BadRequest("all players must be ready".into()));
         }
     }
 
@@ -1090,9 +1169,7 @@ async fn start_lobby(
         return Err(AppError::Conflict("match already running".into()));
     }
 
-    lobbies
-        .set_status(lobby_id, LobbyStatus::Starting)
-        .await?;
+    lobbies.set_status(lobby_id, LobbyStatus::Starting).await?;
     realtime::publish_lobby_state(&state, lobby_id, "lobby.starting").await;
 
     let host = ServerGameHost::arc(
@@ -1100,12 +1177,13 @@ async fn start_lobby(
         lobby.path.clone(),
         state.db.clone(),
         lobby.game_id.clone(),
+        lobby.chain,
         lobby.entry_amount_micro,
         lobby.pot_micro,
         lobby.creator_id,
         meta.dev_id,
         meta.fee.percentage(),
-        state.config.platform_wallet().to_owned(),
+        state.config.fallback_dev_wallet(lobby.chain),
         state.redis.clone(),
         state.subscriptions.clone(),
         state.sessions.clone(),

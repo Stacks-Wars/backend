@@ -95,7 +95,9 @@ impl SessionManager {
     pub fn send(&self, connection_id: ConnectionId, message: ServerMessage) -> bool {
         let tx = {
             let sessions = self.sessions.read();
-            sessions.get(&connection_id).map(|session| session.tx.clone())
+            sessions
+                .get(&connection_id)
+                .map(|session| session.tx.clone())
         };
 
         let Some(tx) = tx else {
