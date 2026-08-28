@@ -59,4 +59,71 @@ impl LobbyFinishedRepo {
         }
         self.set(lobby_id, &value).await
     }
+
+    /// Flip `needsOnChainRefund` off after every draw seat has been kicked.
+    pub async fn mark_refunded(&self, lobby_id: LobbyId) -> AppResult<()> {
+        self.mark_seat_refunded(lobby_id, None).await
+    }
+
+    /// Record one kicked refund address. `needsOnChainRefund` stays true until
+    /// every paid refund claim has been confirmed.
+    pub async fn mark_seat_refunded(
+        &self,
+        lobby_id: LobbyId,
+        address: Option<&str>,
+    ) -> AppResult<()> {
+        let Some(mut value) = self.get(lobby_id).await? else {
+            return Ok(());
+        };
+        let Some(obj) = value.as_object_mut() else {
+            return Ok(());
+        };
+        if let Some(address) = address.filter(|a| !a.is_empty()) {
+            let mut refunded: Vec<String> = obj
+                .get("refundedAddresses")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            if !refunded.iter().any(|existing| existing == address) {
+                refunded.push(address.to_string());
+            }
+
+            let pending: Vec<String> = obj
+                .get("claims")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter(|claim| {
+                            claim.get("role").and_then(|v| v.as_str()) == Some("refund")
+                                && claim
+                                    .get("amountMicro")
+                                    .and_then(|v| v.as_i64())
+                                    .unwrap_or(0)
+                                    > 0
+                        })
+                        .filter_map(|claim| {
+                            claim
+                                .get("principal")
+                                .and_then(|v| v.as_str())
+                                .map(str::to_string)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let all_done = pending
+                .iter()
+                .all(|principal| refunded.iter().any(|done| done == principal));
+            obj.insert("refundedAddresses".into(), serde_json::json!(refunded));
+            if all_done {
+                obj.insert("needsOnChainRefund".into(), Value::Bool(false));
+            }
+        } else {
+            obj.insert("needsOnChainRefund".into(), Value::Bool(false));
+        }
+        self.set(lobby_id, &value).await
+    }
 }

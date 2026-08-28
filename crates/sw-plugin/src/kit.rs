@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
+use std::time::{Duration, Instant};
 use sw_domain::GameId;
 use uuid::Uuid;
 
@@ -100,6 +101,102 @@ impl TurnRotation {
         } else {
             None
         }
+    }
+}
+
+/// Per-player time bank. Only the active player's remaining time ticks.
+///
+/// `start_turn` on the already-active player is a no-op so multi-jump
+/// continuations keep one continuous clock.
+#[derive(Debug, Clone)]
+pub struct PlayerClocks {
+    remaining: HashMap<Uuid, Duration>,
+    active: Option<Uuid>,
+    turn_started: Option<Instant>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ClockReading {
+    pub user_id: Uuid,
+    pub remaining_ms: u64,
+}
+
+impl PlayerClocks {
+    pub fn new(player_ids: impl IntoIterator<Item = Uuid>, bank: Duration) -> Self {
+        let remaining = player_ids.into_iter().map(|id| (id, bank)).collect();
+        Self {
+            remaining,
+            active: None,
+            turn_started: None,
+        }
+    }
+
+    pub fn start_turn(&mut self, id: Uuid) {
+        if self.active == Some(id) {
+            return;
+        }
+        self.pause_turn();
+        self.active = Some(id);
+        self.turn_started = Some(Instant::now());
+    }
+
+    pub fn pause_turn(&mut self) {
+        let Some(id) = self.active.take() else {
+            return;
+        };
+        let elapsed = self
+            .turn_started
+            .take()
+            .map(|started| started.elapsed())
+            .unwrap_or_default();
+        if let Some(left) = self.remaining.get_mut(&id) {
+            *left = left.saturating_sub(elapsed);
+        }
+    }
+
+    pub fn remaining(&self, id: Uuid) -> Duration {
+        let stored = self.remaining.get(&id).copied().unwrap_or_default();
+        if self.active != Some(id) {
+            return stored;
+        }
+        let elapsed = self
+            .turn_started
+            .map(|started| started.elapsed())
+            .unwrap_or_default();
+        stored.saturating_sub(elapsed)
+    }
+
+    pub fn remaining_ms(&self, id: Uuid) -> u64 {
+        u64::try_from(self.remaining(id).as_millis()).unwrap_or(u64::MAX)
+    }
+
+    pub fn active(&self) -> Option<Uuid> {
+        self.active
+    }
+
+    pub fn flagged(&self) -> Option<Uuid> {
+        let id = self.active?;
+        (self.remaining(id).is_zero()).then_some(id)
+    }
+
+    /// Wall-clock instant when the active bank hits zero. Clients interpolate
+    /// from this instead of waiting on 1s server ticks.
+    pub fn deadline_unix_ms(&self) -> Option<i64> {
+        let id = self.active?;
+        let left = self.remaining(id);
+        Some(chrono::Utc::now().timestamp_millis() + left.as_millis() as i64)
+    }
+
+    pub fn readings(&self) -> Vec<ClockReading> {
+        let mut ids: Vec<Uuid> = self.remaining.keys().copied().collect();
+        ids.sort_unstable();
+        ids.into_iter()
+            .map(|user_id| ClockReading {
+                user_id,
+                remaining_ms: self.remaining_ms(user_id),
+            })
+            .collect()
     }
 }
 
@@ -249,5 +346,43 @@ mod tests {
         assert_eq!(rotation.active_count(), 1);
         assert!(rotation.is_game_over());
         assert_eq!(rotation.get_winner(), Some(players[0]));
+    }
+
+    #[test]
+    fn clocks_pause_resume_and_idempotent_start() {
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        let mut clocks = PlayerClocks::new([a, b], Duration::from_millis(1_000));
+
+        clocks.start_turn(a);
+        std::thread::sleep(Duration::from_millis(30));
+        let ticking = clocks.remaining(a);
+        assert!(ticking < Duration::from_millis(1_000));
+        assert_eq!(clocks.remaining(b), Duration::from_millis(1_000));
+
+        clocks.start_turn(a);
+        assert!(clocks.remaining(a) <= ticking);
+
+        clocks.pause_turn();
+        let paused = clocks.remaining(a);
+        std::thread::sleep(Duration::from_millis(20));
+        assert_eq!(clocks.remaining(a), paused);
+
+        clocks.start_turn(b);
+        assert_eq!(clocks.remaining(a), paused);
+        assert_eq!(clocks.active(), Some(b));
+    }
+
+    #[test]
+    fn clocks_flag_when_active_bank_hits_zero() {
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        let mut clocks = PlayerClocks::new([a, b], Duration::from_millis(5));
+        clocks.start_turn(a);
+        std::thread::sleep(Duration::from_millis(20));
+        assert_eq!(clocks.flagged(), Some(a));
+        assert!(clocks.remaining(a).is_zero());
+        assert_eq!(clocks.remaining(b), Duration::from_millis(5));
+        assert!(clocks.deadline_unix_ms().is_some());
     }
 }

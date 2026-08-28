@@ -18,14 +18,11 @@ repository = "https://github.com/stacks-wars/backend"
 
 [workspace.dependencies]
 sw-domain = "1.0.2"
-sw-plugin = "1.0.1"
-sw_checkers = "1.0.1"
+sw-plugin = "1.0.2"
+sw_checkers = "1.0.2"
 sw_lexi_wars = "1.0.0"
 sw_ludo = "1.0.0"
 sw_ludo_rush = "1.0.0"
-
-# [patch.crates-io]
-# sw-domain = { path = "crates/sw-domain" }
 
 anyhow = "1.0.104"
 async-trait = "0.1.91"

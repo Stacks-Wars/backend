@@ -26,7 +26,10 @@ use crate::data::users::PgUserRepo;
 use crate::services::push::PushService;
 use crate::services::realtime;
 use crate::services::telegram::TelegramNotifier;
-use crate::services::vault_oracle::{build_claim_intent, split_pot};
+use crate::services::vault_oracle::{
+    build_claim_intent, draw_refund_claims as build_draw_refunds, is_draw_result, split_pot,
+    winner_for_claim,
+};
 use crate::ws::{APP_TOPIC, SessionManager, SubscriptionManager};
 
 pub struct ServerGameHost {
@@ -156,6 +159,26 @@ impl ServerGameHost {
             .map(|w| w.address)
     }
 
+    async fn draw_refund_claims(&self) -> Vec<serde_json::Value> {
+        let lobby = match PgLobbyRepo::new(self.db.clone())
+            .get_by_id(self.lobby_id)
+            .await
+        {
+            Ok(Some(lobby)) => lobby,
+            _ => return Vec::new(),
+        };
+        let mut seats = Vec::new();
+        for user_id in lobby.participants.iter().copied() {
+            seats.push((user_id, self.custodial_address(user_id).await));
+        }
+        build_draw_refunds(
+            seats,
+            lobby.entry_amount_micro,
+            lobby.is_sponsored,
+            lobby.creator_id,
+        )
+    }
+
     /// Missing dest user (prod UUID on dest) → 0% fee. Active user without a
     /// wallet on this chain keeps the configured %; the claim path provisions.
     async fn resolve_dest_fee(&self) -> (String, u8, Option<UserId>, bool) {
@@ -263,12 +286,12 @@ impl ServerGameHost {
 
         let match_id = MatchId::new();
         let pot = self.pot_micro;
-
-        let winner = result
-            .winners
-            .first()
-            .copied()
-            .or_else(|| result.rankings.first().copied());
+        let draw = is_draw_result(result);
+        let winner = if draw {
+            None
+        } else {
+            winner_for_claim(result)
+        };
 
         let winner_principal = match winner {
             Some(w) => self.custodial_address(w).await,
@@ -292,6 +315,12 @@ impl ServerGameHost {
             _ => None,
         };
 
+        let refunds = if draw && pot > 0 {
+            self.draw_refund_claims().await
+        } else {
+            Vec::new()
+        };
+
         let _ = PgLobbyRepo::new(self.db.clone())
             .set_status(self.lobby_id, LobbyStatus::Finished)
             .await;
@@ -308,20 +337,25 @@ impl ServerGameHost {
         self.record_match_history(match_id, result).await;
 
         let topic = format!("lobby:{}", self.lobby_id);
-        let claims = match &intent {
-            Some(c) => vec![serde_json::json!({
-                "userId": c.user_id.as_uuid().to_string(),
-                "principal": c.principal,
-                "amountMicro": c.amount_micro,
-                "nonce": c.nonce,
-                "devWallet": c.dest_wallet,
-                "devFee": c.dest_fee,
-                "devId": c.dest_id.map(|id| id.as_uuid().to_string()),
-                "devNeedsWallet": c.dest_needs_wallet,
-                "role": "winner",
-            })],
-            None => Vec::new(),
+        let claims = if !refunds.is_empty() {
+            refunds
+        } else {
+            match &intent {
+                Some(c) => vec![serde_json::json!({
+                    "userId": c.user_id.as_uuid().to_string(),
+                    "principal": c.principal,
+                    "amountMicro": c.amount_micro,
+                    "nonce": c.nonce,
+                    "devWallet": c.dest_wallet,
+                    "devFee": c.dest_fee,
+                    "devId": c.dest_id.map(|id| id.as_uuid().to_string()),
+                    "devNeedsWallet": c.dest_needs_wallet,
+                    "role": "winner",
+                })],
+                None => Vec::new(),
+            }
         };
+        let needs_refund = claims.iter().any(|c| c.get("role").and_then(|v| v.as_str()) == Some("refund"));
         // Clients render standings from this list — `lobby.state` is not
         // rebroadcast on finish, so ranks must travel with the event.
         let standings = self.build_standings_payload(result).await;
@@ -331,6 +365,7 @@ impl ServerGameHost {
             "matchId": match_id,
             "winners": result.winners,
             "needsOnChainClaim": intent.is_some(),
+            "needsOnChainRefund": needs_refund,
             "claims": claims,
             "standings": standings,
         });
@@ -587,7 +622,7 @@ impl GameHost for ServerGameHost {
         is_winner: bool,
     ) -> PluginResult<PlayerResult> {
         let wars_point = calculate_wars_point(ctx);
-        let won = is_winner || ctx.rank == 1;
+        let won = is_winner;
 
         let game_id = ctx.game_id.clone().unwrap_or_else(|| self.game_id.clone());
 
