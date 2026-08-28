@@ -39,6 +39,7 @@ pub fn sensitive_router() -> Router<AppState> {
         )
         .route("/{lobby_id}/join", post(join_lobby))
         .route("/{lobby_id}/vault-claim", post(confirm_vault_claim))
+        .route("/{lobby_id}/vault-refund", post(confirm_vault_refund))
 }
 
 /// Remaining lobby mutations — Write rate tier.
@@ -228,6 +229,16 @@ struct VaultClaimBody {
     #[allow(dead_code)]
     nonce: u64,
     vault_txid: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VaultRefundBody {
+    address: String,
+    #[allow(dead_code)]
+    amount_micro: i64,
+    vault_txid: String,
+    user_id: Option<Uuid>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1087,6 +1098,57 @@ async fn confirm_vault_claim(
         "Winnings received".into(),
         "Your balance has been updated.".into(),
         "/wallet".into(),
+    );
+
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "balance": bal,
+    })))
+}
+
+async fn confirm_vault_refund(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(lobby_id): Path<Uuid>,
+    Json(body): Json<VaultRefundBody>,
+) -> AppResult<Json<serde_json::Value>> {
+    let lobby_id = LobbyId::from(lobby_id);
+    let txid = body.vault_txid.trim();
+    if txid.is_empty() {
+        return Err(AppError::BadRequest("vaultTxid required".into()));
+    }
+    let lobby = PgLobbyRepo::new(state.db.clone())
+        .get_by_id(lobby_id)
+        .await?
+        .ok_or(AppError::NotFound("lobby not found"))?;
+    if lobby.status != LobbyStatus::Finished {
+        return Err(AppError::Conflict("lobby not finished".into()));
+    }
+    if !lobby.participants.iter().any(|p| *p == auth.user_id) {
+        return Err(AppError::Unauthorized("not in lobby"));
+    }
+
+    verify_vault_leave(&state, lobby.chain, &lobby.path, body.address.trim(), txid).await?;
+
+    let chain = lobby.chain;
+    let refunded = body
+        .user_id
+        .map(UserId::from)
+        .filter(|id| lobby.participants.iter().any(|p| p == id))
+        .unwrap_or(auth.user_id);
+    let bal = fresh_wallet_balance(&state, refunded, chain).await?;
+    let _ = crate::data::lobby_finished::LobbyFinishedRepo::new(state.redis.clone())
+        .mark_seat_refunded(lobby_id, Some(body.address.trim()))
+        .await;
+
+    realtime::publish_wallet_balance(
+        &state,
+        refunded,
+        json!({
+            "availableMicro": bal.available_micro,
+            "address": bal.address,
+            "chain": chain.as_str(),
+        }),
     );
 
     Ok(Json(serde_json::json!({
