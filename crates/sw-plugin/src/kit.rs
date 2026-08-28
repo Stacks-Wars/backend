@@ -323,6 +323,43 @@ pub fn calculate_wars_point(ctx: &WarsPointContext) -> i64 {
     base_points.clamp(0, 50)
 }
 
+/// Optional first-party placement split. Other games can ignore this and
+/// pay whatever they put on `WarsPointContext.prize`.
+///
+/// - 2 players: 70 / 30
+/// - 3+ players: 50 / 30 / 20 for 1st–3rd
+pub fn placement_share_pct(rank: usize, participants: usize) -> u8 {
+    if participants <= 2 {
+        match rank {
+            1 => 70,
+            2 => 30,
+            _ => 0,
+        }
+    } else {
+        match rank {
+            1 => 50,
+            2 => 30,
+            3 => 20,
+            _ => 0,
+        }
+    }
+}
+
+/// Prize in the same unit as `pot` (typically dollars). `None` when unpaid.
+pub fn placement_prize(pot: f64, rank: usize, participants: usize) -> Option<f64> {
+    let pct = placement_share_pct(rank, participants);
+    if pct == 0 || pot <= 0.0 {
+        None
+    } else {
+        Some((pot * f64::from(pct)) / 100.0)
+    }
+}
+
+/// How many paid places this roster size fills (2 heads-up, else 3).
+pub fn paid_place_count(participants: usize) -> usize {
+    if participants <= 2 { 2 } else { 3 }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -384,5 +421,20 @@ mod tests {
         assert!(clocks.remaining(a).is_zero());
         assert_eq!(clocks.remaining(b), Duration::from_millis(5));
         assert!(clocks.deadline_unix_ms().is_some());
+    }
+
+    #[test]
+    fn placement_split_heads_up_and_field() {
+        assert_eq!(placement_share_pct(1, 2), 70);
+        assert_eq!(placement_share_pct(2, 2), 30);
+        assert_eq!(placement_share_pct(3, 2), 0);
+        assert_eq!(placement_share_pct(1, 4), 50);
+        assert_eq!(placement_share_pct(2, 4), 30);
+        assert_eq!(placement_share_pct(3, 4), 20);
+        assert_eq!(placement_share_pct(4, 4), 0);
+        assert_eq!(placement_prize(10.0, 1, 2), Some(7.0));
+        assert_eq!(placement_prize(10.0, 3, 3), Some(2.0));
+        assert_eq!(paid_place_count(2), 2);
+        assert_eq!(paid_place_count(5), 3);
     }
 }

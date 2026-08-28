@@ -4,6 +4,7 @@ pub mod chat;
 pub mod join_requests;
 pub mod lobbies;
 pub mod lobby_finished;
+pub mod lobby_payouts;
 pub mod lobby_runtime;
 pub mod lobby_status;
 pub mod matches;

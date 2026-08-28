@@ -39,7 +39,7 @@ Game engines live in separate crates (crates.io `sw_*`), not inside `sw-server` 
 ## Vault and settlement
 
 - Paid lobbies: verify on-chain vault txs before seating.
-- Settle via `complete_match` → claim intents → client vault claim. Do not add a second payout path.
+- Settle via `complete_match` → claim intents → client vault claim. Do not add a second payout path. Games that split the pot call `issue_payout` as ranks lock (same claim-intent shape); `complete_match` with `stats.settlement = "distributed"` must not issue a second winner-take-all claim. Empty `winners` without that flag is still a draw refund.
 - Respect fee and entry limits in server config.
 - Chain-specific code (Hiro, Stacks principals, vault function names) stays behind the host / a chain adapter. Games and HTTP routes should not grow a second chain's types inline.
 

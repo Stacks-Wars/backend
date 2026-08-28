@@ -20,6 +20,7 @@ use uuid::Uuid;
 
 use crate::data::chat::LobbyChatRepo;
 use crate::data::lobbies::{GameActivity, PgLobbyRepo};
+use crate::data::lobby_payouts::LobbyPayoutRepo;
 use crate::data::lobby_runtime::{LobbyStateRepo, PlayerStateRepo};
 use crate::error::AppResult;
 use crate::state::AppState;
@@ -80,6 +81,9 @@ pub struct LobbySnapshot {
     /// Present when the lobby has settled (live event or Redis/PG restore).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub finished: Option<Value>,
+    /// Mid-match place claims already issued (`issue_payout`). Reconnects retry.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub pending_payouts: Vec<Value>,
 }
 
 /// Which users are currently watching a room.
@@ -124,6 +128,10 @@ pub async fn build_lobby_snapshot(
     } else {
         None
     };
+    let pending_payouts = LobbyPayoutRepo::new(state.redis.clone())
+        .list(lobby_id)
+        .await
+        .unwrap_or_default();
 
     Ok(LobbySnapshot {
         lobby,
@@ -134,6 +142,7 @@ pub async fn build_lobby_snapshot(
         chat,
         game,
         finished,
+        pending_payouts,
     })
 }
 

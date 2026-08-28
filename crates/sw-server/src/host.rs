@@ -18,6 +18,7 @@ use uuid::Uuid;
 use sw_plugin::GameRegistry;
 
 use crate::data::lobbies::PgLobbyRepo;
+use crate::data::lobby_payouts::LobbyPayoutRepo;
 use crate::data::lobby_runtime::{LobbyStateRepo, PlayerStateRepo};
 use crate::data::matches::{MatchPlayerRecord, MatchRecord, PgMatchRepo};
 use crate::data::seasons::{PgSeasonRepo, SeasonRepo};
@@ -27,8 +28,8 @@ use crate::services::push::PushService;
 use crate::services::realtime;
 use crate::services::telegram::TelegramNotifier;
 use crate::services::vault_oracle::{
-    build_claim_intent, draw_refund_claims as build_draw_refunds, is_draw_result, split_pot,
-    winner_for_claim,
+    build_claim_intent, draw_refund_claims as build_draw_refunds, is_distributed_settlement,
+    is_draw_result, split_pot, winner_for_claim,
 };
 use crate::ws::{APP_TOPIC, SessionManager, SubscriptionManager};
 
@@ -286,8 +287,13 @@ impl ServerGameHost {
 
         let match_id = MatchId::new();
         let pot = self.pot_micro;
-        let draw = is_draw_result(result);
-        let winner = if draw {
+        let prior_payouts = LobbyPayoutRepo::new(self.redis.clone())
+            .list(self.lobby_id)
+            .await
+            .unwrap_or_default();
+        let distributed = is_distributed_settlement(result) || !prior_payouts.is_empty();
+        let draw = !distributed && is_draw_result(result);
+        let winner = if draw || distributed {
             None
         } else {
             winner_for_claim(result)
@@ -339,6 +345,8 @@ impl ServerGameHost {
         let topic = format!("lobby:{}", self.lobby_id);
         let claims = if !refunds.is_empty() {
             refunds
+        } else if !prior_payouts.is_empty() {
+            prior_payouts
         } else {
             match &intent {
                 Some(c) => vec![serde_json::json!({
@@ -356,6 +364,11 @@ impl ServerGameHost {
             }
         };
         let needs_refund = claims.iter().any(|c| c.get("role").and_then(|v| v.as_str()) == Some("refund"));
+        let needs_claim = !needs_refund
+            && claims.iter().any(|c| {
+                c.get("amountMicro").and_then(|v| v.as_i64()).unwrap_or(0) > 0
+                    && c.get("role").and_then(|v| v.as_str()) != Some("refund")
+            });
         // Clients render standings from this list — `lobby.state` is not
         // rebroadcast on finish, so ranks must travel with the event.
         let standings = self.build_standings_payload(result).await;
@@ -364,7 +377,7 @@ impl ServerGameHost {
             "lobbyPath": self.lobby_path,
             "matchId": match_id,
             "winners": result.winners,
-            "needsOnChainClaim": intent.is_some(),
+            "needsOnChainClaim": needs_claim,
             "needsOnChainRefund": needs_refund,
             "claims": claims,
             "standings": standings,
@@ -568,6 +581,95 @@ impl GameHost for ServerGameHost {
 
     async fn complete_match(&self, result: MatchResult) -> PluginResult<()> {
         self.settle(&result).await
+    }
+
+    async fn issue_payout(&self, user_id: UserId, amount_micro: i64) -> PluginResult<()> {
+        if amount_micro <= 0 || self.pot_micro <= 0 {
+            return Ok(());
+        }
+        let repo = LobbyPayoutRepo::new(self.redis.clone());
+        match repo.already_paid(self.lobby_id, user_id).await {
+            Ok(true) => return Ok(()),
+            Ok(false) => {}
+            Err(err) => {
+                return Err(PluginError::Host(err.to_string()));
+            }
+        }
+
+        let Some(principal) = self.custodial_address(user_id).await else {
+            warn!(
+                lobby_id = %self.lobby_id,
+                user_id = %user_id,
+                "skipping payout; player has no custodial wallet"
+            );
+            return Ok(());
+        };
+
+        let (dest_wallet, game_fee_pct, dest_id, dest_needs_wallet) = self.resolve_dest_fee().await;
+        let nonce = repo
+            .next_nonce(self.lobby_id)
+            .await
+            .map_err(|e| PluginError::Host(e.to_string()))?;
+        let Some(intent) = build_claim_intent(
+            amount_micro,
+            game_fee_pct,
+            user_id,
+            principal,
+            dest_wallet,
+            dest_id,
+            dest_needs_wallet,
+        ) else {
+            return Ok(());
+        };
+
+        let claim = serde_json::json!({
+            "userId": intent.user_id.as_uuid().to_string(),
+            "principal": intent.principal,
+            "amountMicro": intent.amount_micro,
+            "nonce": nonce,
+            "devWallet": intent.dest_wallet,
+            "devFee": intent.dest_fee,
+            "devId": intent.dest_id.map(|id| id.as_uuid().to_string()),
+            "devNeedsWallet": intent.dest_needs_wallet,
+            "role": "place",
+        });
+        if let Err(err) = repo.push(self.lobby_id, &claim).await {
+            error!(
+                lobby_id = %self.lobby_id,
+                error = %err,
+                "failed to persist payout claim"
+            );
+            return Err(PluginError::Host(err.to_string()));
+        }
+
+        let payload = serde_json::json!({
+            "lobbyId": self.lobby_id,
+            "lobbyPath": self.lobby_path,
+            "claim": claim,
+        });
+        let msg = crate::ws::ServerMessage {
+            kind: "lobby.payout".into(),
+            payload: payload.clone(),
+        };
+        let topic = format!("lobby:{}", self.lobby_id);
+        self.subscriptions.publish(&self.sessions, &topic, msg);
+        self.subscriptions.publish(
+            &self.sessions,
+            &realtime::user_topic(user_id),
+            crate::ws::ServerMessage {
+                kind: "lobby.payout".into(),
+                payload,
+            },
+        );
+        crate::services::push::spawn_user_notice(
+            self.push.clone(),
+            self.db.clone(),
+            user_id,
+            "Prize unlocked".into(),
+            "Your share of the pot is ready to claim.".into(),
+            format!("/room/{}", self.lobby_path),
+        );
+        Ok(())
     }
 
     async fn finish_lobby(&self) -> PluginResult<()> {
