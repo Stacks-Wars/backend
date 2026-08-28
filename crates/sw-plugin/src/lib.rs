@@ -21,8 +21,9 @@ pub use factory::GameFactory;
 pub use game_error::GameError;
 pub use host::{GameHost, GameHostRef};
 pub use kit::{
-    calculate_wars_point, ClockReading, GameBootstrap, GamePlayerState, GameResults, GameStatus,
-    GameSummary, PlayerClocks, PlayerRanking, PlayerResult, TurnRotation, WarsPointContext,
+    calculate_wars_point, placement_prize, placement_share_pct, paid_place_count, ClockReading,
+    GameBootstrap, GamePlayerState, GameResults, GameStatus, GameSummary, PlayerClocks,
+    PlayerRanking, PlayerResult, TurnRotation, WarsPointContext,
 };
 pub use message::MatchResult;
 pub use nop_host::NopHost;

@@ -75,7 +75,18 @@ pub fn winner_for_claim(result: &sw_plugin::MatchResult) -> Option<UserId> {
 }
 
 pub fn is_draw_result(result: &sw_plugin::MatchResult) -> bool {
-    result.winners.is_empty()
+    result.winners.is_empty() && !is_distributed_settlement(result)
+}
+
+/// Games that already paid places via `issue_payout` finish with this flag so
+/// settle does not treat empty-or-named winners as a full-pot claim or a draw
+/// refund.
+pub fn is_distributed_settlement(result: &sw_plugin::MatchResult) -> bool {
+    result
+        .stats
+        .get("settlement")
+        .and_then(|v| v.as_str())
+        == Some("distributed")
 }
 
 /// Entry actually paid by this seat. Sponsored guests pay nothing.
@@ -201,5 +212,17 @@ mod tests {
         assert_eq!(claims[0]["userId"], creator.as_uuid().to_string());
         assert_eq!(claims[0]["amountMicro"], 2_000_000);
         assert_eq!(claims[0]["role"], "refund");
+    }
+
+    #[test]
+    fn distributed_settlement_is_not_a_draw() {
+        let result = MatchResult {
+            winners: vec![],
+            rankings: vec![uid(1), uid(2)],
+            stats: serde_json::json!({ "settlement": "distributed" }),
+        };
+        assert!(is_distributed_settlement(&result));
+        assert!(!is_draw_result(&result));
+        assert_eq!(winner_for_claim(&result), None);
     }
 }

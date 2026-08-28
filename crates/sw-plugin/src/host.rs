@@ -32,6 +32,13 @@ pub trait GameHost: Send + Sync {
         is_winner: bool,
     ) -> PluginResult<PlayerResult>;
 
+    /// Pay this player now from the vault pot. Games that want winner-take-all
+    /// at `complete_match` should not call this. Default is a no-op so older
+    /// hosts keep compiling.
+    async fn issue_payout(&self, _user_id: UserId, _amount_micro: i64) -> PluginResult<()> {
+        Ok(())
+    }
+
     async fn broadcast_room_game(&self, msg: &GameRoomBroadcast) -> PluginResult<()> {
         let payload =
             serde_json::to_value(msg).map_err(|e| crate::PluginError::Serialization(e.to_string()))?;
