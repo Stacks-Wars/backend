@@ -596,6 +596,95 @@ impl PgUserRepo {
         Ok(())
     }
 
+    pub async fn quest_flags(&self, id: UserId) -> AppResult<Option<QuestFlags>> {
+        Self::quest_flags_on(&self.pool, id).await
+    }
+
+    pub async fn quest_flags_on<'e, E>(exec: E, id: UserId) -> AppResult<Option<QuestFlags>>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+    {
+        sqlx::query_as::<_, QuestFlags>(
+            r#"
+            SELECT
+                (username IS NOT NULL) AS username_set,
+                referral_prompt_status::text AS referral_prompt_status,
+                quest_intro_seen_at,
+                getting_started_completed_at
+            FROM users
+            WHERE id = $1 AND deleted_at IS NULL
+            "#,
+        )
+        .bind(id.as_uuid())
+        .fetch_optional(exec)
+        .await
+        .map_err(|err| AppError::Internal(err.into()))
+    }
+
+    /// Write-once: pending → set. Returns false if the prompt was already answered.
+    pub async fn set_referral(&self, id: UserId, referrer_id: UserId) -> AppResult<bool> {
+        let n = sqlx::query(
+            r#"
+            UPDATE users SET
+                referred_by_user_id = $2,
+                referred_at = now(),
+                referral_prompt_status = 'set',
+                updated_at = now()
+            WHERE id = $1
+              AND deleted_at IS NULL
+              AND referral_prompt_status = 'pending'
+              AND id <> $2
+            "#,
+        )
+        .bind(id.as_uuid())
+        .bind(referrer_id.as_uuid())
+        .execute(&self.pool)
+        .await
+        .map_err(|err| AppError::Internal(err.into()))?
+        .rows_affected();
+        Ok(n > 0)
+    }
+
+    /// Write-once: pending → skipped.
+    pub async fn skip_referral(&self, id: UserId) -> AppResult<bool> {
+        let n = sqlx::query(
+            r#"
+            UPDATE users SET
+                referral_prompt_status = 'skipped',
+                updated_at = now()
+            WHERE id = $1
+              AND deleted_at IS NULL
+              AND referral_prompt_status = 'pending'
+            "#,
+        )
+        .bind(id.as_uuid())
+        .execute(&self.pool)
+        .await
+        .map_err(|err| AppError::Internal(err.into()))?
+        .rows_affected();
+        Ok(n > 0)
+    }
+
+    pub async fn mark_quest_intro_seen(&self, id: UserId) -> AppResult<()> {
+        let n = sqlx::query(
+            r#"
+            UPDATE users SET
+                quest_intro_seen_at = COALESCE(quest_intro_seen_at, now()),
+                updated_at = now()
+            WHERE id = $1 AND deleted_at IS NULL
+            "#,
+        )
+        .bind(id.as_uuid())
+        .execute(&self.pool)
+        .await
+        .map_err(|err| AppError::Internal(err.into()))?
+        .rows_affected();
+        if n == 0 {
+            return Err(AppError::NotFound("user"));
+        }
+        Ok(())
+    }
+
     /// Scrub PII, drop custodial keys, and remove the Neon Auth identity so the
     /// email can be used to sign up again. Keeps the `users` row for FK history.
     pub async fn anonymize(&self, id: UserId) -> AppResult<()> {
@@ -622,6 +711,7 @@ impl PgUserRepo {
                 email_verified_at = NULL,
                 avatar_url = NULL,
                 lobby_alerts_enabled = false,
+                referred_by_user_id = NULL,
                 deleted_at = now(),
                 updated_at = now()
             WHERE id = $1 AND deleted_at IS NULL
@@ -629,6 +719,14 @@ impl PgUserRepo {
         )
         .bind(id.as_uuid())
         .bind(&tombstone)
+        .execute(&mut *tx)
+        .await
+        .map_err(|err| AppError::Internal(err.into()))?;
+
+        sqlx::query(
+            r#"UPDATE users SET referred_by_user_id = NULL WHERE referred_by_user_id = $1"#,
+        )
+        .bind(id.as_uuid())
         .execute(&mut *tx)
         .await
         .map_err(|err| AppError::Internal(err.into()))?;
@@ -683,4 +781,12 @@ pub struct UserPrefs {
     pub legal_accepted_at: Option<DateTime<Utc>>,
     pub legal_version: Option<String>,
     pub deleted_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct QuestFlags {
+    pub username_set: bool,
+    pub referral_prompt_status: String,
+    pub quest_intro_seen_at: Option<DateTime<Utc>>,
+    pub getting_started_completed_at: Option<DateTime<Utc>>,
 }

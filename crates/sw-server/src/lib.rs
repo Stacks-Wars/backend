@@ -9,6 +9,7 @@ pub mod games;
 pub mod host;
 pub mod infra;
 pub mod middleware;
+pub mod quests;
 pub mod routes;
 pub mod services;
 pub mod state;

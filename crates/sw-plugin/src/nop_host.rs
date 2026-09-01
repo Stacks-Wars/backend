@@ -3,7 +3,7 @@ use serde_json::Value;
 use sw_domain::UserId;
 
 use crate::dto::PlayerStateWire;
-use crate::kit::{calculate_wars_point, PlayerResult, WarsPointContext};
+use crate::kit::{calculate_wars_point_for, PlayerResult, WarsPointContext};
 use crate::{GameHost, MatchResult, PluginResult};
 
 /// Placeholder host used between `GameFactory::create` and `GameEngine::start`.
@@ -45,12 +45,12 @@ impl GameHost for NopHost {
     async fn save_player_result(
         &self,
         ctx: &WarsPointContext,
-        _is_winner: bool,
+        is_winner: bool,
     ) -> PluginResult<PlayerResult> {
         Ok(PlayerResult {
             rank: ctx.rank,
             prize: ctx.prize,
-            wars_point: calculate_wars_point(ctx),
+            wars_point: calculate_wars_point_for(ctx, is_winner),
         })
     }
 }

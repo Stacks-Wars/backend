@@ -427,6 +427,25 @@ pub fn publish_leaderboard_updated(state: &AppState, season_id: Option<i32>, gam
     );
 }
 
+pub fn publish_quest_updated(state: &AppState, user_id: UserId) {
+    publish_quest_updated_raw(&state.subscriptions, &state.sessions, user_id);
+}
+
+pub fn publish_quest_updated_raw(
+    subscriptions: &crate::ws::SubscriptionManager,
+    sessions: &crate::ws::SessionManager,
+    user_id: UserId,
+) {
+    subscriptions.publish(
+        sessions,
+        &user_topic(user_id),
+        ServerMessage {
+            kind: "quest.updated".into(),
+            payload: json!({ "userId": user_id.as_uuid().to_string() }),
+        },
+    );
+}
+
 /// A finished match, for the landing page ticker and game activity feeds.
 pub fn publish_match_finished(state: &AppState, payload: Value) {
     state.subscriptions.publish(

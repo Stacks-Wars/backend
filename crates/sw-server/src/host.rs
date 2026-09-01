@@ -10,7 +10,7 @@ use sqlx::PgPool;
 use sw_domain::{ChainId, GameId, LobbyId, LobbyStatus, MatchId, UserId, usdcx_to_micro};
 use sw_plugin::{
     GameHost, MatchResult, PlayerResult, PlayerStateWire, PluginError, PluginResult,
-    WarsPointContext, calculate_wars_point,
+    WarsPointContext,
 };
 use tracing::{error, info, warn};
 use uuid::Uuid;
@@ -273,6 +273,14 @@ impl ServerGameHost {
                 error = %err,
                 "failed to persist match history"
             );
+        } else {
+            crate::quests::ingest::spawn_after_match(
+                self.db.clone(),
+                self.redis.clone(),
+                self.sessions.clone(),
+                self.subscriptions.clone(),
+                record.players.iter().map(|p| p.user_id).collect(),
+            );
         }
     }
 
@@ -363,7 +371,9 @@ impl ServerGameHost {
                 None => Vec::new(),
             }
         };
-        let needs_refund = claims.iter().any(|c| c.get("role").and_then(|v| v.as_str()) == Some("refund"));
+        let needs_refund = claims
+            .iter()
+            .any(|c| c.get("role").and_then(|v| v.as_str()) == Some("refund"));
         let needs_claim = !needs_refund
             && claims.iter().any(|c| {
                 c.get("amountMicro").and_then(|v| v.as_i64()).unwrap_or(0) > 0
@@ -723,7 +733,20 @@ impl GameHost for ServerGameHost {
         ctx: &WarsPointContext,
         is_winner: bool,
     ) -> PluginResult<PlayerResult> {
-        let wars_point = calculate_wars_point(ctx);
+        let wars_point = {
+            let rank = ctx.rank.max(1) as i64;
+            let participants = ctx.participants.max(1) as i64;
+            let mut points = 5;
+            points += (participants - rank).max(0) * 2;
+            if is_winner {
+                points += 8;
+            }
+            let paid = !ctx.is_sponsored && ctx.entry_amount.unwrap_or(0.0) > 0.0;
+            if paid {
+                points += 3;
+            }
+            points.clamp(0, 40)
+        };
         let won = is_winner;
 
         let game_id = ctx.game_id.clone().unwrap_or_else(|| self.game_id.clone());
