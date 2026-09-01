@@ -3,6 +3,7 @@ mod games;
 mod health;
 mod leaderboard;
 mod lobbies;
+mod quests;
 mod seasons;
 mod users;
 mod wallet;
@@ -30,6 +31,7 @@ pub fn router(state: AppState) -> Router {
     let write = Router::new()
         .nest("/lobbies", lobbies::write_router())
         .nest("/users", users::write_router())
+        .nest("/quests", quests::write_router())
         .nest("/wallet", wallet::write_router())
         .nest("/admin", admin::write_router())
         .layer(middleware::from_fn_with_state(
@@ -41,6 +43,7 @@ pub fn router(state: AppState) -> Router {
         .merge(sensitive)
         .merge(write)
         .nest("/users", users::read_router())
+        .nest("/quests", quests::read_router())
         .nest("/games", games::router())
         .nest("/lobbies", lobbies::read_router())
         .nest("/seasons", seasons::router())

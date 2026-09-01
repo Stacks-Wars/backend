@@ -4,6 +4,7 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use sw_domain::{GameId, LeaderboardEntry, SeasonId};
 
+use crate::data::quest_claims::PgQuestRepo;
 use crate::data::seasons::{PgSeasonRepo, SeasonRepo};
 use crate::data::stats::PgStatsRepo;
 use crate::error::{AppError, AppResult};
@@ -15,11 +16,22 @@ pub fn router() -> Router<AppState> {
         .route("/seasons/{season_id}", get(season_leaderboard))
 }
 
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+enum Board {
+    #[default]
+    Game,
+    Quests,
+    All,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LeaderboardQuery {
     season_id: Option<i32>,
     game_id: Option<String>,
+    #[serde(default)]
+    board: Board,
     #[serde(default = "default_limit")]
     limit: i64,
     #[serde(default)]
@@ -60,19 +72,34 @@ async fn fetch_leaderboard(
     state: &AppState,
     season_id: SeasonId,
     game_id: Option<String>,
+    board: Board,
     limit: i64,
     offset: i64,
 ) -> AppResult<LeaderboardResponse> {
     let (limit, offset) = clamp_page(limit, offset);
-    let stats = PgStatsRepo::new(state.db.clone());
 
-    let (items, total) = if let Some(raw) = game_id {
-        let game_id = GameId::new(raw).map_err(|e| AppError::BadRequest(e.to_string()))?;
-        stats
-            .leaderboard_by_game(season_id, &game_id, limit, offset)
-            .await?
-    } else {
-        stats.leaderboard_overall(season_id, limit, offset).await?
+    let (items, total) = match board {
+        Board::Game => {
+            let stats = PgStatsRepo::new(state.db.clone());
+            if let Some(raw) = game_id {
+                let game_id = GameId::new(raw).map_err(|e| AppError::BadRequest(e.to_string()))?;
+                stats
+                    .leaderboard_by_game(season_id, &game_id, limit, offset)
+                    .await?
+            } else {
+                stats.leaderboard_overall(season_id, limit, offset).await?
+            }
+        }
+        Board::Quests => {
+            PgQuestRepo::new(state.db.clone())
+                .leaderboard_quests(season_id, limit, offset)
+                .await?
+        }
+        Board::All => {
+            PgQuestRepo::new(state.db.clone())
+                .leaderboard_all(season_id, limit, offset)
+                .await?
+        }
     };
 
     Ok(LeaderboardResponse {
@@ -88,8 +115,15 @@ async fn leaderboard(
     Query(query): Query<LeaderboardQuery>,
 ) -> AppResult<Json<LeaderboardResponse>> {
     let season_id = resolve_season_id(&state, query.season_id).await?;
-    let page =
-        fetch_leaderboard(&state, season_id, query.game_id, query.limit, query.offset).await?;
+    let page = fetch_leaderboard(
+        &state,
+        season_id,
+        query.game_id,
+        query.board,
+        query.limit,
+        query.offset,
+    )
+    .await?;
     Ok(Json(page))
 }
 
@@ -102,6 +136,7 @@ async fn season_leaderboard(
         &state,
         SeasonId(season_id),
         query.game_id,
+        query.board,
         query.limit,
         query.offset,
     )

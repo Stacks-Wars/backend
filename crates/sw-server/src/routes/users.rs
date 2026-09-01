@@ -29,6 +29,8 @@ pub fn write_router() -> Router<AppState> {
         .route("/", post(upsert_user))
         .route("/me", delete(delete_account))
         .route("/me/legal-accept", post(accept_legal))
+        .route("/me/referral", post(set_referral))
+        .route("/me/quest-intro", post(mark_quest_intro))
         .route("/me/preferences", axum::routing::patch(update_preferences))
         .route("/me/push-subscription", post(save_push_subscription))
         .route("/me/push-subscription", delete(delete_push_subscription))
@@ -58,7 +60,7 @@ pub fn read_router() -> Router<AppState> {
 }
 
 /// 3–24 chars, lowercase alphanumeric plus `_` and `-`, must start with a letter.
-fn validate_username(raw: &str) -> AppResult<String> {
+pub(crate) fn validate_username(raw: &str) -> AppResult<String> {
     let username = raw.trim().to_lowercase();
     let len = username.chars().count();
     if !(3..=24).contains(&len) {
@@ -118,18 +120,31 @@ struct UserResponse {
     current_chain: ChainId,
     legal_accepted_at: Option<DateTime<Utc>>,
     legal_version: Option<String>,
+    referral_prompt_status: String,
+    quest_intro_seen_at: Option<DateTime<Utc>>,
+    getting_started_completed_at: Option<DateTime<Utc>>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
 
 impl UserResponse {
-    fn from_user_prefs(user: User, prefs: Option<crate::data::users::UserPrefs>) -> Self {
+    fn from_user_prefs(
+        user: User,
+        prefs: Option<crate::data::users::UserPrefs>,
+        flags: Option<crate::data::users::QuestFlags>,
+    ) -> Self {
         let prefs = prefs.unwrap_or(crate::data::users::UserPrefs {
             lobby_alerts_enabled: true,
             current_chain: ChainId::default(),
             legal_accepted_at: None,
             legal_version: None,
             deleted_at: None,
+        });
+        let flags = flags.unwrap_or(crate::data::users::QuestFlags {
+            username_set: user.username.is_some(),
+            referral_prompt_status: "pending".into(),
+            quest_intro_seen_at: None,
+            getting_started_completed_at: None,
         });
         Self {
             id: user.id.as_uuid(),
@@ -142,6 +157,9 @@ impl UserResponse {
             current_chain: prefs.current_chain,
             legal_accepted_at: prefs.legal_accepted_at,
             legal_version: prefs.legal_version,
+            referral_prompt_status: flags.referral_prompt_status,
+            quest_intro_seen_at: flags.quest_intro_seen_at,
+            getting_started_completed_at: flags.getting_started_completed_at,
             created_at: user.created_at,
             updated_at: user.updated_at,
         }
@@ -150,7 +168,7 @@ impl UserResponse {
 
 impl From<User> for UserResponse {
     fn from(user: User) -> Self {
-        Self::from_user_prefs(user, None)
+        Self::from_user_prefs(user, None, None)
     }
 }
 
@@ -158,7 +176,8 @@ const LEGAL_VERSION: &str = "2026-08-21";
 
 async fn json_user(repo: &PgUserRepo, user: User) -> AppResult<Json<UserResponse>> {
     let prefs = repo.prefs(user.id).await?;
-    Ok(Json(UserResponse::from_user_prefs(user, prefs)))
+    let flags = repo.quest_flags(user.id).await?;
+    Ok(Json(UserResponse::from_user_prefs(user, prefs, flags)))
 }
 
 #[derive(Debug, Deserialize)]
@@ -341,7 +360,9 @@ async fn update_profile(
         }
     }
 
-    let user = PgUserRepo::new(state.db.clone())
+    let username_set = username.is_some();
+    let repo = PgUserRepo::new(state.db.clone());
+    let user = repo
         .update_profile(
             UserId::from(user_id),
             UpdateProfileInput {
@@ -355,7 +376,77 @@ async fn update_profile(
         )
         .await?;
 
-    Ok(Json(UserResponse::from(user)))
+    if username_set {
+        let mut redis = state.redis.clone();
+        crate::quests::cache::invalidate(&mut redis, UserId::from(user_id)).await;
+        let _ = crate::data::quest_claims::PgQuestRepo::new(state.db.clone())
+            .maybe_stamp_getting_started(UserId::from(user_id))
+            .await;
+        crate::services::realtime::publish_quest_updated(&state, UserId::from(user_id));
+    }
+
+    json_user(&repo, user).await
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReferralBody {
+    username: Option<String>,
+    #[serde(default)]
+    skip: bool,
+}
+
+async fn set_referral(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Json(body): Json<ReferralBody>,
+) -> AppResult<Json<UserResponse>> {
+    let repo = PgUserRepo::new(state.db.clone());
+    let ok = if body.skip {
+        repo.skip_referral(auth.user_id).await?
+    } else {
+        let raw = body
+            .username
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| AppError::BadRequest("username is required".into()))?;
+        let username = validate_username(raw)?;
+        let referrer = repo
+            .get_by_username(&username)
+            .await?
+            .ok_or(AppError::NotFound("user"))?;
+        if referrer.id == auth.user_id {
+            return Err(AppError::BadRequest("cannot refer yourself".into()));
+        }
+        repo.set_referral(auth.user_id, referrer.id).await?
+    };
+    if !ok {
+        return Err(AppError::Conflict("referral already set".into()));
+    }
+    let mut redis = state.redis.clone();
+    crate::quests::cache::invalidate(&mut redis, auth.user_id).await;
+    crate::services::realtime::publish_quest_updated(&state, auth.user_id);
+    let user = repo
+        .get_active_by_id(auth.user_id)
+        .await?
+        .ok_or(AppError::NotFound("user"))?;
+    json_user(&repo, user).await
+}
+
+async fn mark_quest_intro(
+    State(state): State<AppState>,
+    auth: AuthUser,
+) -> AppResult<Json<UserResponse>> {
+    let repo = PgUserRepo::new(state.db.clone());
+    repo.mark_quest_intro_seen(auth.user_id).await?;
+    let mut redis = state.redis.clone();
+    crate::quests::cache::invalidate(&mut redis, auth.user_id).await;
+    let user = repo
+        .get_active_by_id(auth.user_id)
+        .await?
+        .ok_or(AppError::NotFound("user"))?;
+    json_user(&repo, user).await
 }
 
 /// Everything the profile page needs in one round trip.

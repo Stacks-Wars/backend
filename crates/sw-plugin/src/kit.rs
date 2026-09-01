@@ -318,9 +318,25 @@ pub struct WarsPointContext {
     pub token_contract_id: Option<String>,
 }
 
+/// Match Wars Points. `is_winner` is the engine's winner flag (draws get no win bonus).
+pub fn calculate_wars_point_for(ctx: &WarsPointContext, is_winner: bool) -> i64 {
+    let rank = ctx.rank.max(1) as i64;
+    let participants = ctx.participants.max(1) as i64;
+    let mut points = 5;
+    points += (participants - rank).max(0) * 2;
+    if is_winner {
+        points += 8;
+    }
+    let paid = !ctx.is_sponsored && ctx.entry_amount.unwrap_or(0.0) > 0.0;
+    if paid {
+        points += 3;
+    }
+    points.clamp(0, 40)
+}
+
+/// Fallback used by engines when the host save fails. Treats rank 1 as a win.
 pub fn calculate_wars_point(ctx: &WarsPointContext) -> i64 {
-    let base_points = (ctx.participants as i64 - ctx.rank as i64 + 1) * 2;
-    base_points.clamp(0, 50)
+    calculate_wars_point_for(ctx, ctx.rank == 1)
 }
 
 /// Optional first-party placement split. Other games can ignore this and
@@ -436,5 +452,32 @@ mod tests {
         assert_eq!(placement_prize(10.0, 3, 3), Some(2.0));
         assert_eq!(paid_place_count(2), 2);
         assert_eq!(paid_place_count(5), 3);
+    }
+
+    fn ctx(rank: usize, participants: usize, paid: bool, sponsored: bool) -> WarsPointContext {
+        WarsPointContext {
+            user_id: Uuid::new_v4(),
+            game_id: None,
+            rank,
+            prize: None,
+            participants,
+            entry_amount: if paid { Some(1.0) } else { None },
+            current_amount: None,
+            is_sponsored: sponsored,
+            creator_id: None,
+            active_players: participants,
+            token_symbol: None,
+            token_contract_id: None,
+        }
+    }
+
+    #[test]
+    fn wars_points_heads_up_and_paid() {
+        assert_eq!(calculate_wars_point_for(&ctx(2, 2, false, false), false), 5);
+        assert_eq!(calculate_wars_point_for(&ctx(1, 2, false, false), true), 15);
+        assert_eq!(calculate_wars_point_for(&ctx(1, 2, true, false), true), 18);
+        assert_eq!(calculate_wars_point_for(&ctx(1, 4, false, false), true), 19);
+        assert_eq!(calculate_wars_point_for(&ctx(1, 2, true, true), true), 15);
+        assert_eq!(calculate_wars_point(&ctx(1, 2, false, false)), 15);
     }
 }

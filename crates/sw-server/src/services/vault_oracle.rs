@@ -82,11 +82,7 @@ pub fn is_draw_result(result: &sw_plugin::MatchResult) -> bool {
 /// settle does not treat empty-or-named winners as a full-pot claim or a draw
 /// refund.
 pub fn is_distributed_settlement(result: &sw_plugin::MatchResult) -> bool {
-    result
-        .stats
-        .get("settlement")
-        .and_then(|v| v.as_str())
-        == Some("distributed")
+    result.stats.get("settlement").and_then(|v| v.as_str()) == Some("distributed")
 }
 
 /// Entry actually paid by this seat. Sponsored guests pay nothing.
@@ -179,10 +175,7 @@ mod tests {
         assert_eq!(winner_for_claim(&draw), None);
 
         let claims = draw_refund_claims(
-            vec![
-                (a, Some("SP1".into())),
-                (b, Some("SP2".into())),
-            ],
+            vec![(a, Some("SP1".into())), (b, Some("SP2".into()))],
             1_000_000,
             false,
             a,
@@ -200,10 +193,7 @@ mod tests {
         let creator = uid(1);
         let guest = uid(2);
         let claims = draw_refund_claims(
-            vec![
-                (creator, Some("SP1".into())),
-                (guest, Some("SP2".into())),
-            ],
+            vec![(creator, Some("SP1".into())), (guest, Some("SP2".into()))],
             2_000_000,
             true,
             creator,
