@@ -2789,7 +2789,7 @@ dependencies = [
 
 [[package]]
 name = "sw-plugin"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2803,9 +2803,9 @@ dependencies = [
 
 [[package]]
 name = "sw-plugin"
-version = "1.0.3"
+version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d6e2c7dde21dd6ceabb108ca438bebe963c7d21abc9b778d6012ecedea6ba0f"
+checksum = "b23d406eaaf5e2ecd092b48ced84e757b6c4fd605e93d726b64736fc3ffb491b"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2836,7 +2836,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "sw-domain 1.0.2 (registry+https://github.com/rust-lang/crates.io-index)",
- "sw-plugin 1.0.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "sw-plugin 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "sw_checkers",
  "sw_lexi_wars",
  "sw_ludo",
@@ -2862,7 +2862,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sw-domain 1.0.2 (registry+https://github.com/rust-lang/crates.io-index)",
- "sw-plugin 1.0.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "sw-plugin 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "tokio",
  "tracing",
  "uuid",
@@ -2881,7 +2881,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sw-domain 1.0.2 (registry+https://github.com/rust-lang/crates.io-index)",
- "sw-plugin 1.0.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "sw-plugin 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "tokio",
  "tracing",
  "uuid",
@@ -2899,7 +2899,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sw-domain 1.0.2 (registry+https://github.com/rust-lang/crates.io-index)",
- "sw-plugin 1.0.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "sw-plugin 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "tokio",
  "tracing",
  "uuid",
@@ -2917,7 +2917,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sw-domain 1.0.2 (registry+https://github.com/rust-lang/crates.io-index)",
- "sw-plugin 1.0.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "sw-plugin 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "tokio",
  "tracing",
  "uuid",
