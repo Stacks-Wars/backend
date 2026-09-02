@@ -348,44 +348,28 @@ fn classify_tx(
             block_time,
         )),
         Some("Claim") => {
-            let mut to_me: Vec<i64> = mine
+            let max_out = moves
+                .iter()
+                .filter(|m| !m.ty.contains("mintTo") && m.amount > 0)
+                .map(|m| m.amount)
+                .max()
+                .unwrap_or(0);
+            let to_me: Vec<i64> = mine
                 .iter()
                 .filter(|m| ata_hit(m.destination.as_ref()) && !m.ty.contains("mintTo"))
                 .map(|m| m.amount)
                 .filter(|a| *a > 0)
                 .collect();
-            to_me.sort_unstable_by(|a, b| b.cmp(a));
-            match to_me.as_slice() {
-                [winnings, fee, ..] if *fee > 0 && *winnings > *fee => {
-                    items.push(item(
-                        signature,
-                        ChainActivityKind::VaultClaim,
-                        *winnings,
-                        Some(vault),
-                        Some(owner),
-                        status,
-                        block_time,
-                    ));
-                    items.push(item(
-                        signature,
-                        ChainActivityKind::VaultDevFee,
-                        *fee,
-                        Some(vault),
-                        Some(owner),
-                        status,
-                        block_time,
-                    ));
-                }
-                [winnings, ..] => items.push(item(
+            for (kind, amount) in classify_claim_inflows(to_me, max_out) {
+                items.push(item(
                     signature,
-                    ChainActivityKind::VaultClaim,
-                    *winnings,
+                    kind,
+                    amount,
                     Some(vault),
                     Some(owner),
                     status,
                     block_time,
-                )),
-                _ => {}
+                ));
             }
         }
         _ => {
@@ -425,6 +409,28 @@ fn classify_tx(
         }
     }
     items
+}
+
+/// One claim tx pays winner + platform (2%) + optional game fee (≤5%).
+/// A lone inbound used to be labeled Winnings, so dest-fee-only receipts
+/// (game author, not winner) showed up in the wrong filter.
+fn classify_claim_inflows(mut to_me: Vec<i64>, max_out: i64) -> Vec<(ChainActivityKind, i64)> {
+    to_me.retain(|amount| *amount > 0);
+    to_me.sort_unstable_by(|a, b| b.cmp(a));
+    match to_me.as_slice() {
+        [winnings, fee, rest @ ..] if *fee > 0 && *winnings > *fee => {
+            let extra: i64 = rest.iter().copied().sum();
+            vec![
+                (ChainActivityKind::VaultClaim, *winnings),
+                (ChainActivityKind::VaultDevFee, *fee + extra),
+            ]
+        }
+        [only] if max_out > *only => {
+            vec![(ChainActivityKind::VaultDevFee, *only)]
+        }
+        [only, ..] => vec![(ChainActivityKind::VaultClaim, *only)],
+        [] => Vec::new(),
+    }
 }
 
 fn item(
@@ -512,5 +518,34 @@ fn collect_token_moves(instructions: Option<&Vec<Value>>, mint: &str, out: &mut 
                 .and_then(Value::as_str)
                 .map(str::to_owned),
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dest_fee_only_claim_is_game_fee() {
+        let got = classify_claim_inflows(vec![30_000], 6_510_000);
+        assert_eq!(got, vec![(ChainActivityKind::VaultDevFee, 30_000)]);
+    }
+
+    #[test]
+    fn winner_inbound_is_winnings() {
+        let got = classify_claim_inflows(vec![6_510_000], 6_510_000);
+        assert_eq!(got, vec![(ChainActivityKind::VaultClaim, 6_510_000)]);
+    }
+
+    #[test]
+    fn winner_who_is_also_dev_splits_two_legs() {
+        let got = classify_claim_inflows(vec![6_510_000, 350_000], 6_510_000);
+        assert_eq!(
+            got,
+            vec![
+                (ChainActivityKind::VaultClaim, 6_510_000),
+                (ChainActivityKind::VaultDevFee, 350_000),
+            ]
+        );
     }
 }
