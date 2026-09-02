@@ -6,6 +6,7 @@ use sw_domain::{LeaderboardEntry, SeasonId, UserId};
 use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
+use crate::quests::catalog;
 use crate::quests::evaluate::{GettingStartedActions, QualifyingMatch};
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -531,3 +532,154 @@ pub async fn maybe_stamp_getting_started(pool: &PgPool, user_id: UserId) -> AppR
     .rows_affected();
     Ok(n > 0)
 }
+
+/// Drop referral / new-opponent claims this user caused, if they were claimed
+/// and remaining progress no longer meets the target. Deleting the row takes
+/// the WP back and lets the other user reclaim if they still qualify.
+pub async fn reverse_awards_for_deleted_user(
+    tx: &mut Transaction<'_, Postgres>,
+    deleted_id: UserId,
+    referrer_id: Option<UserId>,
+    getting_started_completed: bool,
+) -> AppResult<Vec<UserId>> {
+    let mut affected: Vec<Uuid> = Vec::new();
+    if getting_started_completed && let Some(referrer) = referrer_id {
+        affected.extend(reverse_referral_claims(tx, referrer).await?);
+    }
+    affected.extend(reverse_new_opponent_claims(tx, deleted_id).await?);
+    affected.sort_unstable();
+    affected.dedup();
+    Ok(affected.into_iter().map(UserId::from).collect())
+}
+
+async fn reverse_referral_claims(
+    tx: &mut Transaction<'_, Postgres>,
+    referrer_id: UserId,
+) -> AppResult<Vec<Uuid>> {
+    let remaining: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)::bigint
+        FROM users
+        WHERE referred_by_user_id = $1
+          AND getting_started_completed_at IS NOT NULL
+          AND deleted_at IS NULL
+        "#,
+    )
+    .bind(referrer_id.as_uuid())
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|err| AppError::Internal(err.into()))?;
+
+    sqlx::query_scalar::<_, Uuid>(
+        r#"
+        WITH gone AS (
+            DELETE FROM quest_claims
+            WHERE user_id = $1
+              AND (
+                    (quest_id = $2 AND $4 < 1)
+                 OR (quest_id = $3 AND $4 < 3)
+              )
+            RETURNING user_id
+        )
+        SELECT DISTINCT user_id FROM gone
+        "#,
+    )
+    .bind(referrer_id.as_uuid())
+    .bind(catalog::WEEKLY_REFERRAL)
+    .bind(catalog::MONTHLY_REFERRAL)
+    .bind(remaining)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|err| AppError::Internal(err.into()))
+}
+
+async fn reverse_new_opponent_claims(
+    tx: &mut Transaction<'_, Postgres>,
+    deleted_id: UserId,
+) -> AppResult<Vec<Uuid>> {
+    sqlx::query_scalar::<_, Uuid>(
+        r#"
+        WITH candidates AS (
+            SELECT DISTINCT c.id, c.user_id,
+                   ((c.period_id::date) AT TIME ZONE 'UTC') AS day_start,
+                   (((c.period_id::date) + 1) AT TIME ZONE 'UTC') AS day_end
+            FROM quest_claims c
+            JOIN match_players me ON me.user_id = c.user_id
+            JOIN matches m ON m.id = me.match_id
+              AND m.player_count >= 2
+              AND m.finished_at >= ((c.period_id::date) AT TIME ZONE 'UTC')
+              AND m.finished_at < (((c.period_id::date) + 1) AT TIME ZONE 'UTC')
+            JOIN match_players them
+              ON them.match_id = m.id AND them.user_id = $2
+            WHERE c.quest_id = $1
+              AND c.user_id <> $2
+        ),
+        new_vs_deleted AS (
+            SELECT DISTINCT cand.id
+            FROM candidates cand
+            JOIN match_players me ON me.user_id = cand.user_id
+            JOIN matches m ON m.id = me.match_id
+              AND m.player_count >= 2
+              AND m.finished_at >= cand.day_start
+              AND m.finished_at < cand.day_end
+            JOIN match_players them
+              ON them.match_id = m.id AND them.user_id = $2
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM match_players me2
+                JOIN matches m2 ON m2.id = me2.match_id AND m2.player_count >= 2
+                JOIN match_players them2
+                  ON them2.match_id = m2.id AND them2.user_id = $2
+                WHERE me2.user_id = cand.user_id
+                  AND m2.finished_at >= m.finished_at - INTERVAL '7 days'
+                  AND m2.finished_at < m.finished_at
+            )
+        ),
+        remaining AS (
+            SELECT cand.id, COUNT(DISTINCT opp.user_id) AS still_new
+            FROM candidates cand
+            JOIN new_vs_deleted n ON n.id = cand.id
+            JOIN match_players me ON me.user_id = cand.user_id
+            JOIN matches m ON m.id = me.match_id
+              AND m.player_count >= 2
+              AND m.finished_at >= cand.day_start
+              AND m.finished_at < cand.day_end
+            JOIN match_players opp
+              ON opp.match_id = m.id
+             AND opp.user_id <> cand.user_id
+             AND opp.user_id <> $2
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM match_players me2
+                JOIN matches m2 ON m2.id = me2.match_id AND m2.player_count >= 2
+                JOIN match_players opp2
+                  ON opp2.match_id = m2.id AND opp2.user_id = opp.user_id
+                WHERE me2.user_id = cand.user_id
+                  AND m2.finished_at >= m.finished_at - INTERVAL '7 days'
+                  AND m2.finished_at < m.finished_at
+            )
+            GROUP BY cand.id
+        ),
+        doomed AS (
+            SELECT c.id
+            FROM candidates c
+            JOIN new_vs_deleted n ON n.id = c.id
+            LEFT JOIN remaining r ON r.id = c.id
+            WHERE COALESCE(r.still_new, 0) < 3
+        ),
+        gone AS (
+            DELETE FROM quest_claims c
+            USING doomed
+            WHERE c.id = doomed.id
+            RETURNING c.user_id
+        )
+        SELECT DISTINCT user_id FROM gone
+        "#,
+    )
+    .bind(catalog::DAILY_NEW_OPPONENTS)
+    .bind(deleted_id.as_uuid())
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|err| AppError::Internal(err.into()))
+}
+

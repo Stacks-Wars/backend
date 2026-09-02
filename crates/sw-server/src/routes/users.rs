@@ -968,6 +968,11 @@ async fn delete_account(
     let _: Result<(), _> = redis.del(format!("sw:balance:{uid}")).await;
     let _: Result<(), _> = redis.del(format!("sw:withdraw-lock:{uid}")).await;
 
-    repo.anonymize(user_id).await?;
+    let outcome = repo.anonymize(user_id).await?;
+    crate::quests::cache::invalidate(&mut redis, user_id).await;
+    for other in outcome.reversed_for {
+        crate::quests::cache::invalidate(&mut redis, other).await;
+        crate::services::realtime::publish_quest_updated(&state, other);
+    }
     Ok(Json(serde_json::json!({ "ok": true })))
 }
