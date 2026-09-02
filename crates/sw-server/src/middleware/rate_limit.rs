@@ -44,6 +44,13 @@ pub const SENSITIVE: RatePolicy = RatePolicy {
     user_limit: 20,
 };
 
+/// Public KPI dashboard. Tighter than Global so unlisted sharing cannot be scraped.
+pub const ANALYTICS: RatePolicy = RatePolicy {
+    name: "analytics",
+    ip_limit: 12,
+    user_limit: 24,
+};
+
 pub const WS_CONNECT: RatePolicy = RatePolicy {
     name: "ws_connect",
     ip_limit: 30,
@@ -258,6 +265,10 @@ pub async fn sensitive_limit(State(state): State<AppState>, req: Request, next: 
     enforce(SENSITIVE, state, req, next).await
 }
 
+pub async fn analytics_limit(State(state): State<AppState>, req: Request, next: Next) -> Response {
+    enforce(ANALYTICS, state, req, next).await
+}
+
 /// IP for WS upgrade / handlers: `x-forwarded-for` then `ConnectInfo`.
 pub struct ClientIp(pub String);
 
@@ -337,6 +348,9 @@ mod tests {
         assert_eq!(RateIdentity::Ip("a".into()).limit(GLOBAL), 60);
         assert_eq!(RateIdentity::User(Uuid::nil()).limit(GLOBAL), 240);
         assert_eq!(RateIdentity::Ip("a".into()).limit(SENSITIVE), 20);
+        assert!(ANALYTICS.ip_limit < GLOBAL.ip_limit);
+        assert!(ANALYTICS.user_limit < GLOBAL.user_limit);
+        assert!(ANALYTICS.ip_limit <= SENSITIVE.ip_limit);
     }
 
     #[test]
