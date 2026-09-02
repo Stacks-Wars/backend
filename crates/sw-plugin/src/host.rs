@@ -40,14 +40,18 @@ pub trait GameHost: Send + Sync {
     }
 
     async fn broadcast_room_game(&self, msg: &GameRoomBroadcast) -> PluginResult<()> {
-        let payload =
-            serde_json::to_value(msg).map_err(|e| crate::PluginError::Serialization(e.to_string()))?;
+        let payload = serde_json::to_value(msg)
+            .map_err(|e| crate::PluginError::Serialization(e.to_string()))?;
         self.broadcast(payload).await
     }
 
-    async fn broadcast_user_room(&self, user_id: UserId, msg: &UserRoomMessage) -> PluginResult<()> {
-        let payload =
-            serde_json::to_value(msg).map_err(|e| crate::PluginError::Serialization(e.to_string()))?;
+    async fn broadcast_user_room(
+        &self,
+        user_id: UserId,
+        msg: &UserRoomMessage,
+    ) -> PluginResult<()> {
+        let payload = serde_json::to_value(msg)
+            .map_err(|e| crate::PluginError::Serialization(e.to_string()))?;
         self.send_to(user_id, payload).await
     }
 }

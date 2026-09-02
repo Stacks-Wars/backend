@@ -137,11 +137,7 @@ impl PlayerState {
         }
     }
 
-    pub fn joiner(
-        user_id: UserId,
-        username: Option<String>,
-        display_name: Option<String>,
-    ) -> Self {
+    pub fn joiner(user_id: UserId, username: Option<String>, display_name: Option<String>) -> Self {
         let now = Utc::now().timestamp();
         Self {
             user_id,

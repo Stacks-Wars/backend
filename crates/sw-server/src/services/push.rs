@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use futures::stream::{self, StreamExt};
 use serde_json::{Value, json};
 use tracing::{debug, warn};
 use uuid::Uuid;
@@ -13,6 +14,8 @@ use web_push::{
 use crate::config::Config;
 use crate::data::push::{PushSubscription, PushSubscriptionRepo};
 use sw_domain::{ChainId, UserId};
+
+const PUSH_CONCURRENCY: usize = 16;
 
 #[derive(Clone)]
 pub struct PushService {
@@ -29,6 +32,15 @@ struct PushInner {
 pub fn lobby_notification_tag(path: &str) -> String {
     format!("lobby:{path}")
 }
+
+pub fn quest_nudge_tag(period_id: &str) -> String {
+    format!("quest:daily:{period_id}")
+}
+
+pub const QUEST_NUDGE_TITLE: &str = "You have a new quest today";
+pub const QUEST_NUDGE_BODY: &str = "Don't lose your streak.";
+pub const QUEST_NUDGE_PATH: &str = "/quests";
+pub const QUEST_NUDGE_CTA: &str = "See quest";
 
 impl PushService {
     pub fn from_config(config: &Config) -> Self {
@@ -95,6 +107,30 @@ impl PushService {
                 }),
             )
             .await;
+    }
+
+    /// Fan out one payload to a preloaded subscription list (cron / batch).
+    pub async fn send_to_subscriptions(
+        &self,
+        db: sqlx::PgPool,
+        subs: Vec<PushSubscription>,
+        payload: Value,
+    ) {
+        let Some(inner) = self.inner.clone() else {
+            return;
+        };
+        inner.dispatch_concurrent(&db, &subs, &payload).await;
+    }
+
+    pub fn quest_nudge_payload(&self, period_id: &str) -> Option<Value> {
+        let inner = self.inner.as_ref()?;
+        Some(json!({
+            "title": QUEST_NUDGE_TITLE,
+            "body": QUEST_NUDGE_BODY,
+            "url": format!("{}{}", inner.frontend_url, QUEST_NUDGE_PATH),
+            "tag": quest_nudge_tag(period_id),
+            "actions": [{ "action": "open", "title": QUEST_NUDGE_CTA }],
+        }))
     }
 
     pub async fn send_lobby_created(
@@ -167,16 +203,40 @@ impl PushService {
 impl PushInner {
     async fn dispatch(&self, db: &sqlx::PgPool, subs: &[PushSubscription], payload: &Value) {
         for sub in subs {
-            match self.send_one(sub, payload).await {
-                Ok(()) => {}
-                Err(WebPushError::EndpointNotValid | WebPushError::EndpointNotFound) => {
-                    let _ = PushSubscriptionRepo::new(db.clone())
-                        .delete_endpoint(UserId::from(sub.user_id), &sub.endpoint)
-                        .await;
-                }
-                Err(err) => {
-                    debug!(endpoint = %sub.endpoint, error = %err, "web-push send failed");
-                }
+            self.handle_send_result(db, sub, self.send_one(sub, payload).await)
+                .await;
+        }
+    }
+
+    async fn dispatch_concurrent(
+        &self,
+        db: &sqlx::PgPool,
+        subs: &[PushSubscription],
+        payload: &Value,
+    ) {
+        stream::iter(subs)
+            .for_each_concurrent(PUSH_CONCURRENCY, |sub| async move {
+                self.handle_send_result(db, sub, self.send_one(sub, payload).await)
+                    .await;
+            })
+            .await;
+    }
+
+    async fn handle_send_result(
+        &self,
+        db: &sqlx::PgPool,
+        sub: &PushSubscription,
+        result: Result<(), WebPushError>,
+    ) {
+        match result {
+            Ok(()) => {}
+            Err(WebPushError::EndpointNotValid | WebPushError::EndpointNotFound) => {
+                let _ = PushSubscriptionRepo::new(db.clone())
+                    .delete_endpoint(UserId::from(sub.user_id), &sub.endpoint)
+                    .await;
+            }
+            Err(err) => {
+                debug!(endpoint = %sub.endpoint, error = %err, "web-push send failed");
             }
         }
     }
@@ -259,4 +319,14 @@ pub fn spawn_users_notice(
                 .await;
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quest_tag_includes_period() {
+        assert_eq!(quest_nudge_tag("2026-09-01"), "quest:daily:2026-09-01");
+    }
 }

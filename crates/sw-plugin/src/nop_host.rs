@@ -3,7 +3,7 @@ use serde_json::Value;
 use sw_domain::UserId;
 
 use crate::dto::PlayerStateWire;
-use crate::kit::{calculate_wars_point_for, PlayerResult, WarsPointContext};
+use crate::kit::{PlayerResult, WarsPointContext, calculate_wars_point_for};
 use crate::{GameHost, MatchResult, PluginResult};
 
 /// Placeholder host used between `GameFactory::create` and `GameEngine::start`.

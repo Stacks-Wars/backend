@@ -13,6 +13,7 @@ use crate::data::seasons::{PgSeasonRepo, SeasonRepo, UpdateSeasonInput};
 use crate::error::{AppError, AppResult};
 use crate::services::hiro::HiroClient;
 use crate::services::lobby_ttl::{self, StaleLobby};
+use crate::services::quest_nudge;
 use crate::services::realtime;
 use crate::services::vault_verify::VaultReader;
 use crate::services::wallet_chain::WalletChainService;
@@ -25,6 +26,7 @@ pub fn write_router() -> Router<AppState> {
         .route("/seasons/{season_id}", put(update_season))
         .route("/lobbies/{lobby_id}/expire-seat", post(expire_seat))
         .route("/lobbies/{lobby_id}/expire", post(expire_lobby))
+        .route("/quests/daily-nudge", post(daily_quest_nudge))
 }
 
 /// Admin reads — Global tier only.
@@ -100,6 +102,13 @@ async fn list_stale_lobbies(
     _secret: InternalSecret,
 ) -> AppResult<Json<Vec<StaleLobby>>> {
     Ok(Json(lobby_ttl::list_stale_waiting(&state).await?))
+}
+
+async fn daily_quest_nudge(
+    State(state): State<AppState>,
+    _secret: InternalSecret,
+) -> AppResult<Json<quest_nudge::DailyNudgeResult>> {
+    Ok(Json(quest_nudge::start(state).await?))
 }
 
 /// Confirm one seat was refunded on-chain (or was free), then drop it from the lobby.

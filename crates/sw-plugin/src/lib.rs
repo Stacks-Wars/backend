@@ -21,10 +21,10 @@ pub use factory::GameFactory;
 pub use game_error::GameError;
 pub use host::{GameHost, GameHostRef};
 pub use kit::{
-    calculate_wars_point, calculate_wars_point_for, placement_prize, placement_share_pct,
-    paid_place_count, ClockReading,
-    GameBootstrap, GamePlayerState, GameResults, GameStatus, GameSummary, PlayerClocks,
-    PlayerRanking, PlayerResult, TurnRotation, WarsPointContext,
+    ClockReading, GameBootstrap, GamePlayerState, GameResults, GameStatus, GameSummary,
+    PlayerClocks, PlayerRanking, PlayerResult, TurnRotation, WarsPointContext,
+    calculate_wars_point, calculate_wars_point_for, paid_place_count, placement_prize,
+    placement_share_pct,
 };
 pub use message::MatchResult;
 pub use nop_host::NopHost;
