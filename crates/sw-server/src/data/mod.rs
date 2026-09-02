@@ -10,6 +10,7 @@ pub mod lobby_status;
 pub mod matches;
 pub mod push;
 pub mod quest_claims;
+pub mod quest_nudges;
 pub mod seasons;
 pub mod seat_holds;
 pub mod stats;

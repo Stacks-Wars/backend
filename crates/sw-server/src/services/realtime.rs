@@ -468,3 +468,27 @@ pub fn publish_wallet_balance(state: &AppState, user_id: UserId, payload: Value)
         },
     );
 }
+
+pub fn publish_user_notice(
+    sessions: &crate::ws::SessionManager,
+    subscriptions: &crate::ws::SubscriptionManager,
+    user_id: UserId,
+    title: &str,
+    body: &str,
+    href: &str,
+    tag: &str,
+) {
+    subscriptions.publish(
+        sessions,
+        &user_topic(user_id),
+        ServerMessage {
+            kind: "user.notice".into(),
+            payload: json!({
+                "title": title,
+                "body": body,
+                "href": href,
+                "tag": tag,
+            }),
+        },
+    );
+}
