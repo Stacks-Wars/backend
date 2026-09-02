@@ -682,4 +682,3 @@ async fn reverse_new_opponent_claims(
     .await
     .map_err(|err| AppError::Internal(err.into()))
 }
-

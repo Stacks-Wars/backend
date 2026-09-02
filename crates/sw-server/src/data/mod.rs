@@ -1,5 +1,6 @@
 //! Data access boundaries.
 
+pub mod analytics;
 pub mod chat;
 pub mod join_requests;
 pub mod lobbies;

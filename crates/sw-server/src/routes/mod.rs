@@ -1,4 +1,5 @@
 mod admin;
+mod analytics;
 mod games;
 mod health;
 mod leaderboard;
@@ -39,6 +40,11 @@ pub fn router(state: AppState) -> Router {
             rate_limit::write_limit,
         ));
 
+    let analytics = analytics::router().layer(middleware::from_fn_with_state(
+        state.clone(),
+        rate_limit::analytics_limit,
+    ));
+
     let limited = Router::new()
         .merge(sensitive)
         .merge(write)
@@ -59,6 +65,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/", get(health::root))
         .merge(health::router())
+        .merge(analytics)
         .merge(limited)
         .layer(middleware::from_fn(request_boundary))
         .layer(TraceLayer::new_for_http())
