@@ -4,7 +4,11 @@
 use super::period::PeriodKind;
 use sw_domain::USDCX_MICROS_PER_UNIT;
 
-pub const VERSION: i32 = 1;
+pub const VERSION: i32 = 2;
+
+pub const DAILY_NEW_OPPONENTS: &str = "daily.new-opponents-3";
+pub const WEEKLY_REFERRAL: &str = "weekly.referral-1";
+pub const MONTHLY_REFERRAL: &str = "monthly.referral-3";
 
 /// Bonus mission stages: (dollars, reward points). Sequential, independent
 /// progress per stage. Claiming one unlocks the next at zero.
@@ -19,6 +23,8 @@ pub enum Metric {
     GamesWon,
     UniqueGames,
     UniqueOpponents,
+    /// Distinct opponents in the period who were not faced in the prior 7 days.
+    NewOpponents,
     PaidGames,
     PaidEntryMicro,
     ActiveDays,
@@ -151,11 +157,11 @@ const QUESTS_STATIC: &[QuestDef] = &[
         cta: PLAY,
     },
     QuestDef {
-        id: "daily.opponents-3",
-        title: "Play against 3 different players",
-        description: "Three different people across today's matches.",
+        id: DAILY_NEW_OPPONENTS,
+        title: "Meet 3 new opponents",
+        description: "Play against 3 players you haven't faced in the last 7 days.",
         category: PeriodKind::Daily,
-        metric: Metric::UniqueOpponents,
+        metric: Metric::NewOpponents,
         target: Target::Fixed(3),
         reward_points: 55,
         cta: PLAY,
@@ -241,7 +247,7 @@ const QUESTS_STATIC: &[QuestDef] = &[
         cta: QUESTS,
     },
     QuestDef {
-        id: "weekly.referral-1",
+        id: WEEKLY_REFERRAL,
         title: "Bring a player in",
         description: "Someone you invited finishes Getting Started.",
         category: PeriodKind::Weekly,
@@ -321,7 +327,7 @@ const QUESTS_STATIC: &[QuestDef] = &[
         cta: QUESTS,
     },
     QuestDef {
-        id: "monthly.referral-3",
+        id: MONTHLY_REFERRAL,
         title: "Bring in 3 players",
         description: "Three people you invited finish Getting Started.",
         category: PeriodKind::Monthly,

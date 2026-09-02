@@ -687,12 +687,31 @@ impl PgUserRepo {
 
     /// Scrub PII, drop custodial keys, and remove the Neon Auth identity so the
     /// email can be used to sign up again. Keeps the `users` row for FK history.
-    pub async fn anonymize(&self, id: UserId) -> AppResult<()> {
+    pub async fn anonymize(&self, id: UserId) -> AppResult<AnonymizeOutcome> {
         let mut tx = self
             .pool
             .begin()
             .await
             .map_err(|err| AppError::Internal(err.into()))?;
+
+        #[derive(sqlx::FromRow)]
+        struct DeleteSnapshot {
+            referred_by_user_id: Option<Uuid>,
+            getting_started_completed_at: Option<DateTime<Utc>>,
+        }
+
+        let snap = sqlx::query_as::<_, DeleteSnapshot>(
+            r#"
+            SELECT referred_by_user_id, getting_started_completed_at
+            FROM users
+            WHERE id = $1 AND deleted_at IS NULL
+            "#,
+        )
+        .bind(id.as_uuid())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|err| AppError::Internal(err.into()))?
+        .ok_or(AppError::NotFound("user"))?;
 
         let tombstone = format!("deleted+{}@invalid", id.as_uuid());
         let neon_email: Option<String> =
@@ -702,7 +721,7 @@ impl PgUserRepo {
                 .await
                 .map_err(|err| AppError::Internal(err.into()))?;
 
-        sqlx::query(
+        let n = sqlx::query(
             r#"
             UPDATE users SET
                 username = NULL,
@@ -721,7 +740,19 @@ impl PgUserRepo {
         .bind(&tombstone)
         .execute(&mut *tx)
         .await
-        .map_err(|err| AppError::Internal(err.into()))?;
+        .map_err(|err| AppError::Internal(err.into()))?
+        .rows_affected();
+        if n == 0 {
+            return Err(AppError::NotFound("user"));
+        }
+
+        let reversed_for = super::quest_claims::reverse_awards_for_deleted_user(
+            &mut tx,
+            id,
+            snap.referred_by_user_id.map(UserId::from),
+            snap.getting_started_completed_at.is_some(),
+        )
+        .await?;
 
         sqlx::query(
             r#"UPDATE users SET referred_by_user_id = NULL WHERE referred_by_user_id = $1"#,
@@ -761,8 +792,13 @@ impl PgUserRepo {
         tx.commit()
             .await
             .map_err(|err| AppError::Internal(err.into()))?;
-        Ok(())
+        Ok(AnonymizeOutcome { reversed_for })
     }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AnonymizeOutcome {
+    pub reversed_for: Vec<UserId>,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]

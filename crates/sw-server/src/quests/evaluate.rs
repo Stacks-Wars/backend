@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, Duration, NaiveDate, Utc};
 use uuid::Uuid;
 
 use super::catalog::{self, Metric, QuestDef};
@@ -35,6 +35,7 @@ pub struct PeriodBucket {
     pub games_won: i64,
     pub unique_games: HashSet<String>,
     pub unique_opponents: HashSet<Uuid>,
+    pub new_opponents: HashSet<Uuid>,
     pub paid_games: i64,
     pub paid_entry_micro: i64,
     pub active_days: HashSet<NaiveDate>,
@@ -130,7 +131,12 @@ impl OpenPeriods {
     }
 
     pub fn covering_start(&self) -> DateTime<Utc> {
-        let mut start = self.weekly.starts_at.min(self.monthly.starts_at);
+        let lookback = self.daily.starts_at - NEW_OPPONENT_LOOKBACK;
+        let mut start = self
+            .weekly
+            .starts_at
+            .min(self.monthly.starts_at)
+            .min(lookback);
         if let Some(season) = &self.seasonal {
             start = start.min(season.starts_at);
         }
@@ -202,6 +208,14 @@ impl Buckets {
                 }
             }
         }
+        if let Some(daily) = inner.get_mut(&PeriodKind::Daily) {
+            daily.new_opponents = new_opponents_in_period(
+                user_id,
+                rows,
+                periods.daily.starts_at,
+                periods.daily.resets_at,
+            );
+        }
         Self { inner }
     }
 
@@ -212,6 +226,43 @@ impl Buckets {
 
 fn in_window(at: DateTime<Utc>, clock: &PeriodClock) -> bool {
     at >= clock.starts_at && clock.resets_at.is_none_or(|end| at < end)
+}
+
+pub const NEW_OPPONENT_LOOKBACK: Duration = Duration::days(7);
+
+/// Opponents faced in `[start, end)` who were not faced in the 7 days before
+/// that match. Uses `rows` outside the window as lookback only.
+pub fn new_opponents_in_period(
+    user_id: Uuid,
+    rows: &[QualifyingMatch],
+    start: DateTime<Utc>,
+    end: Option<DateTime<Utc>>,
+) -> HashSet<Uuid> {
+    let mut fresh = HashSet::new();
+    for row in rows {
+        if row.player_count < 2 {
+            continue;
+        }
+        if row.finished_at < start || end.is_some_and(|end| row.finished_at >= end) {
+            continue;
+        }
+        let window_start = row.finished_at - NEW_OPPONENT_LOOKBACK;
+        for opp in &row.opponents {
+            if *opp == user_id || fresh.contains(opp) {
+                continue;
+            }
+            let seen_recently = rows.iter().any(|prior| {
+                prior.player_count >= 2
+                    && prior.finished_at >= window_start
+                    && prior.finished_at < row.finished_at
+                    && prior.opponents.iter().any(|id| id == opp)
+            });
+            if !seen_recently {
+                fresh.insert(*opp);
+            }
+        }
+    }
+    fresh
 }
 
 /// Paid volume that counts toward the current bonus mission stage.
@@ -268,6 +319,7 @@ pub fn metric_value(
         }
         Metric::UniqueGames => bucket.unique_games.len() as i64,
         Metric::UniqueOpponents => bucket.unique_opponents.len() as i64,
+        Metric::NewOpponents => bucket.new_opponents.len() as i64,
         Metric::PaidGames => bucket.paid_games,
         Metric::PaidEntryMicro => bucket.paid_entry_micro,
         Metric::ActiveDays => bucket.active_days.len() as i64,
@@ -467,7 +519,7 @@ mod tests {
 
     #[test]
     fn referral_metric_uses_successful_count() {
-        let def = catalog::get("weekly.referral-1").unwrap();
+        let def = catalog::get(catalog::WEEKLY_REFERRAL).unwrap();
         let extras = Extras {
             referral_successes: 0,
             ..Default::default()
@@ -485,5 +537,67 @@ mod tests {
         let def = catalog::get("monthly.games-all").unwrap();
         assert_eq!(def.target.value(4), 4);
         assert_eq!(def.target.value(2), 2);
+    }
+
+    fn match_at(
+        game: &str,
+        at: DateTime<Utc>,
+        creator: Uuid,
+        opponents: Vec<Uuid>,
+    ) -> QualifyingMatch {
+        QualifyingMatch {
+            game_id: game.into(),
+            finished_at: at,
+            is_winner: false,
+            entry_micro: 0,
+            creator_id: creator,
+            player_count: 2,
+            opponents,
+        }
+    }
+
+    #[test]
+    fn new_opponents_ignore_faces_within_seven_days() {
+        let me = Uuid::now_v7();
+        let fresh = Uuid::now_v7();
+        let recent = Uuid::now_v7();
+        let stale = Uuid::now_v7();
+        let periods = OpenPeriods::current(at(10, 15), None, None, None);
+        let rows = [
+            match_at("checkers", at(2, 12), me, vec![stale]),
+            match_at("checkers", at(8, 12), me, vec![recent]),
+            match_at("checkers", at(10, 12), me, vec![fresh, recent, stale]),
+        ];
+        let buckets = Buckets::from_matches(me, &rows, &periods);
+        let daily = buckets.get(PeriodKind::Daily);
+        assert_eq!(daily.unique_opponents.len(), 3);
+        assert_eq!(daily.new_opponents.len(), 2);
+        assert!(daily.new_opponents.contains(&fresh));
+        assert!(daily.new_opponents.contains(&stale));
+        assert!(!daily.new_opponents.contains(&recent));
+        let def = catalog::get(catalog::DAILY_NEW_OPPONENTS).unwrap();
+        assert_eq!(metric_value(&def, &buckets, &Extras::default(), 4), 2);
+    }
+
+    #[test]
+    fn new_opponents_dedupe_repeats_the_same_day() {
+        let me = Uuid::now_v7();
+        let opp = Uuid::now_v7();
+        let periods = OpenPeriods::current(at(10, 18), None, None, None);
+        let rows = [
+            match_at("checkers", at(10, 10), me, vec![opp]),
+            match_at("ludo", at(10, 16), me, vec![opp]),
+        ];
+        let buckets = Buckets::from_matches(me, &rows, &periods);
+        assert_eq!(buckets.get(PeriodKind::Daily).new_opponents.len(), 1);
+    }
+
+    #[test]
+    fn covering_start_includes_seven_day_lookback() {
+        let periods = OpenPeriods::current(at(1, 15), None, None, None);
+        assert_eq!(
+            periods.covering_start(),
+            periods.daily.starts_at - NEW_OPPONENT_LOOKBACK
+        );
     }
 }
