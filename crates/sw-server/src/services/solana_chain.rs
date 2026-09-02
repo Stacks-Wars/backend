@@ -55,6 +55,8 @@ struct TokenAmount {
 #[derive(Debug, Deserialize)]
 struct SigInfo {
     signature: String,
+    #[serde(rename = "blockTime")]
+    block_time: Option<i64>,
 }
 
 pub async fn get_balance(state: &AppState, user_id: UserId) -> AppResult<WalletBalance> {
@@ -114,26 +116,27 @@ pub async fn list_activity(
         return Ok(Vec::new());
     }
 
-    let mut signatures = Vec::new();
+    let mut signatures: Vec<(String, Option<i64>)> = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for ata in &atas {
         match fetch_signatures(&state.config.solana_rpc_url, ata, limit.clamp(1, 50)).await {
             Ok(sigs) => {
                 for sig in sigs {
-                    if seen.insert(sig.clone()) {
-                        signatures.push(sig);
+                    if seen.insert(sig.signature.clone()) {
+                        signatures.push((sig.signature, sig.block_time));
                     }
                 }
             }
             Err(err) => tracing::warn!(error = %err, ata, "solana signatures read failed"),
         }
     }
+    signatures.sort_by(|a, b| b.1.cmp(&a.1));
     signatures.truncate(limit.clamp(1, 50) as usize);
 
     let vault = state.config.solana_vault_program_id.as_str();
     let mint = state.config.solana_usdc_mint.as_str();
     let mut out = Vec::new();
-    for signature in signatures {
+    for (signature, _) in signatures {
         match fetch_parsed_tx(&state.config.solana_rpc_url, &signature).await {
             Ok(Some(tx)) => {
                 out.extend(classify_tx(
@@ -203,7 +206,11 @@ async fn fetch_atas(rpc_url: &str, mint: &str, owner: &str) -> Result<Vec<String
         .unwrap_or_default())
 }
 
-async fn fetch_signatures(rpc_url: &str, address: &str, limit: u32) -> Result<Vec<String>, String> {
+async fn fetch_signatures(
+    rpc_url: &str,
+    address: &str,
+    limit: u32,
+) -> Result<Vec<SigInfo>, String> {
     let client = reqwest::Client::new();
     let envelope: RpcEnvelope<Vec<SigInfo>> = client
         .post(rpc_url)
@@ -219,12 +226,7 @@ async fn fetch_signatures(rpc_url: &str, address: &str, limit: u32) -> Result<Ve
         .json()
         .await
         .map_err(|e| e.to_string())?;
-    Ok(envelope
-        .result
-        .unwrap_or_default()
-        .into_iter()
-        .map(|s| s.signature)
-        .collect())
+    Ok(envelope.result.unwrap_or_default())
 }
 
 async fn fetch_parsed_tx(rpc_url: &str, signature: &str) -> Result<Option<Value>, String> {
@@ -275,6 +277,8 @@ fn classify_tx(
         .cloned()
         .unwrap_or_default();
     let vault_ix = instruction_name_from_logs(&logs, vault);
+    let vault_touched = vault_program_in_logs(&logs, vault);
+    let delta = owner_mint_delta(&meta, owner, mint);
 
     let mut moves = Vec::new();
     collect_token_moves(
@@ -298,25 +302,35 @@ fn classify_tx(
         .iter()
         .filter(|m| ata_hit(m.source.as_ref()) || ata_hit(m.destination.as_ref()))
         .collect();
-    if mine.is_empty() {
-        return Vec::new();
-    }
 
-    let inbound: i64 = mine
+    let mut inbound: i64 = mine
         .iter()
         .filter(|m| ata_hit(m.destination.as_ref()) && !ata_hit(m.source.as_ref()))
         .map(|m| m.amount)
         .sum();
-    let outbound: i64 = mine
+    let mut outbound: i64 = mine
         .iter()
         .filter(|m| ata_hit(m.source.as_ref()) && !ata_hit(m.destination.as_ref()))
         .map(|m| m.amount)
         .sum();
     let minted: i64 = mine
         .iter()
-        .filter(|m| m.ty.contains("mintTo") && ata_hit(m.destination.as_ref()))
+        .filter(|m| m.ty.to_ascii_lowercase().contains("mintto") && ata_hit(m.destination.as_ref()))
         .map(|m| m.amount)
         .sum();
+
+    // Parsed inner transfers are often missing on v0 / ALT txs. Balance
+    // deltas still see the $50 mint and lobby joins.
+    if inbound == 0 && delta > 0 {
+        inbound = delta;
+    }
+    if outbound == 0 && delta < 0 {
+        outbound = -delta;
+    }
+
+    if inbound <= 0 && outbound <= 0 && minted <= 0 {
+        return Vec::new();
+    }
 
     let mut items = Vec::new();
     match vault_ix.as_deref() {
@@ -347,19 +361,25 @@ fn classify_tx(
             status,
             block_time,
         )),
-        Some("Claim") => {
+        Some("Claim") if inbound > 0 => {
             let max_out = moves
                 .iter()
-                .filter(|m| !m.ty.contains("mintTo") && m.amount > 0)
+                .filter(|m| !m.ty.to_ascii_lowercase().contains("mintto") && m.amount > 0)
                 .map(|m| m.amount)
                 .max()
-                .unwrap_or(0);
-            let to_me: Vec<i64> = mine
+                .unwrap_or(0)
+                .max(max_positive_owner_delta(&meta, mint));
+            let mut to_me: Vec<i64> = mine
                 .iter()
-                .filter(|m| ata_hit(m.destination.as_ref()) && !m.ty.contains("mintTo"))
+                .filter(|m| {
+                    ata_hit(m.destination.as_ref()) && !m.ty.to_ascii_lowercase().contains("mintto")
+                })
                 .map(|m| m.amount)
                 .filter(|a| *a > 0)
                 .collect();
+            if to_me.is_empty() {
+                to_me.push(inbound);
+            }
             for (kind, amount) in classify_claim_inflows(to_me, max_out) {
                 items.push(item(
                     signature,
@@ -373,41 +393,72 @@ fn classify_tx(
             }
         }
         _ => {
-            if minted > 0 {
+            if outbound > 0 && vault_touched {
                 items.push(item(
                     signature,
-                    ChainActivityKind::Deposit,
-                    minted,
-                    None,
-                    Some(owner),
-                    status,
-                    block_time,
-                ));
-            }
-            if inbound > minted {
-                items.push(item(
-                    signature,
-                    ChainActivityKind::Deposit,
-                    inbound - minted,
-                    mine.iter().find_map(|m| m.source.as_deref()),
-                    Some(owner),
-                    status,
-                    block_time,
-                ));
-            }
-            if outbound > 0 {
-                items.push(item(
-                    signature,
-                    ChainActivityKind::Withdraw,
+                    ChainActivityKind::VaultJoin,
                     outbound,
                     Some(owner),
-                    mine.iter().find_map(|m| m.destination.as_deref()),
+                    Some(vault),
                     status,
                     block_time,
                 ));
+            } else if inbound > 0 && vault_touched {
+                let max_out = max_positive_owner_delta(&meta, mint).max(inbound);
+                for (kind, amount) in classify_claim_inflows(vec![inbound], max_out) {
+                    items.push(item(
+                        signature,
+                        kind,
+                        amount,
+                        Some(vault),
+                        Some(owner),
+                        status,
+                        block_time,
+                    ));
+                }
+            } else {
+                if minted > 0 {
+                    items.push(item(
+                        signature,
+                        ChainActivityKind::Deposit,
+                        minted,
+                        None,
+                        Some(owner),
+                        status,
+                        block_time,
+                    ));
+                }
+                let rest = if minted > 0 {
+                    inbound.saturating_sub(minted)
+                } else {
+                    inbound
+                };
+                if rest > 0 {
+                    items.push(item(
+                        signature,
+                        ChainActivityKind::Deposit,
+                        rest,
+                        mine.iter().find_map(|m| m.source.as_deref()),
+                        Some(owner),
+                        status,
+                        block_time,
+                    ));
+                }
+                if outbound > 0 {
+                    items.push(item(
+                        signature,
+                        ChainActivityKind::Withdraw,
+                        outbound,
+                        Some(owner),
+                        mine.iter().find_map(|m| m.destination.as_deref()),
+                        status,
+                        block_time,
+                    ));
+                }
             }
         }
     }
+    items.retain(|row| row.amount_micro > 0);
     items
 }
 
@@ -455,22 +506,98 @@ fn item(
 }
 
 fn instruction_name_from_logs(logs: &[Value], vault: &str) -> Option<String> {
+    if vault.is_empty() {
+        return None;
+    }
+    let invoke = format!("Program {vault} invoke");
     let mut in_vault = false;
     for log in logs {
         let Some(line) = log.as_str() else { continue };
-        if line.contains(vault) && line.contains("invoke") {
+        if line.starts_with(&invoke) {
             in_vault = true;
+            continue;
         }
-        if in_vault {
-            if let Some(name) = line.strip_prefix("Program log: Instruction: ") {
-                return Some(name.trim().to_owned());
-            }
+        if in_vault && let Some(name) = line.strip_prefix("Program log: Instruction: ") {
+            return Some(name.trim().to_owned());
         }
-        if line.contains(vault) && line.contains("success") {
+        if line.starts_with(&format!("Program {vault} success"))
+            || line.starts_with(&format!("Program {vault} failed"))
+        {
             in_vault = false;
         }
     }
     None
+}
+
+fn vault_program_in_logs(logs: &[Value], vault: &str) -> bool {
+    !vault.is_empty()
+        && logs.iter().any(|log| {
+            log.as_str()
+                .is_some_and(|line| line.starts_with(&format!("Program {vault} invoke")))
+        })
+}
+
+fn json_amount(value: Option<&Value>) -> i64 {
+    let Some(value) = value else {
+        return 0;
+    };
+    if let Some(s) = value.as_str() {
+        return s.parse().unwrap_or(0);
+    }
+    if let Some(n) = value.as_i64() {
+        return n;
+    }
+    if let Some(n) = value.as_u64() {
+        return n.min(i64::MAX as u64) as i64;
+    }
+    0
+}
+
+fn token_balance_sum(meta: &Value, key: &str, owner: &str, mint: &str) -> i64 {
+    meta.get(key)
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter(|row| {
+                    row.get("mint").and_then(Value::as_str) == Some(mint)
+                        && row.get("owner").and_then(Value::as_str) == Some(owner)
+                })
+                .map(|row| json_amount(row.pointer("/uiTokenAmount/amount")))
+                .sum()
+        })
+        .unwrap_or(0)
+}
+
+fn owner_mint_delta(meta: &Value, owner: &str, mint: &str) -> i64 {
+    token_balance_sum(meta, "postTokenBalances", owner, mint)
+        - token_balance_sum(meta, "preTokenBalances", owner, mint)
+}
+
+fn max_positive_owner_delta(meta: &Value, mint: &str) -> i64 {
+    use std::collections::HashMap;
+    let mut pre = HashMap::<String, i64>::new();
+    let mut post = HashMap::<String, i64>::new();
+    let add = |map: &mut HashMap<String, i64>, key: &str| {
+        if let Some(rows) = meta.get(key).and_then(Value::as_array) {
+            for row in rows {
+                if row.get("mint").and_then(Value::as_str) != Some(mint) {
+                    continue;
+                }
+                let Some(owner) = row.get("owner").and_then(Value::as_str) else {
+                    continue;
+                };
+                *map.entry(owner.to_owned()).or_insert(0) +=
+                    json_amount(row.pointer("/uiTokenAmount/amount"));
+            }
+        }
+    };
+    add(&mut pre, "preTokenBalances");
+    add(&mut post, "postTokenBalances");
+    post.iter()
+        .map(|(owner, after)| after - pre.get(owner).copied().unwrap_or(0))
+        .filter(|delta| *delta > 0)
+        .max()
+        .unwrap_or(0)
 }
 
 fn collect_token_moves(instructions: Option<&Vec<Value>>, mint: &str, out: &mut Vec<TokenMove>) {
@@ -495,15 +622,11 @@ fn collect_token_moves(instructions: Option<&Vec<Value>>, mint: &str, out: &mut 
         if !ix_mint.is_empty() && ix_mint != mint {
             continue;
         }
-        let amount = info
-            .and_then(|i| {
-                i.pointer("/tokenAmount/amount")
-                    .and_then(Value::as_str)
-                    .or_else(|| i.get("amount").and_then(Value::as_str))
-            })
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
-        if amount <= 0 && !ty.contains("mintTo") {
+        let amount = json_amount(
+            info.and_then(|i| i.pointer("/tokenAmount/amount"))
+                .or_else(|| info.and_then(|i| i.get("amount"))),
+        );
+        if amount <= 0 && !ty.to_ascii_lowercase().contains("mintto") {
             continue;
         }
         out.push(TokenMove {
@@ -547,5 +670,126 @@ mod tests {
                 (ChainActivityKind::VaultDevFee, 350_000),
             ]
         );
+    }
+
+    fn balance_tx(
+        logs: &[&str],
+        owner: &str,
+        mint: &str,
+        pre: i64,
+        post: i64,
+        others: &[(&str, i64, i64)],
+    ) -> Value {
+        let mut pre_rows = vec![json!({
+            "mint": mint,
+            "owner": owner,
+            "uiTokenAmount": { "amount": pre.to_string() }
+        })];
+        let mut post_rows = vec![json!({
+            "mint": mint,
+            "owner": owner,
+            "uiTokenAmount": { "amount": post.to_string() }
+        })];
+        for (who, before, after) in others {
+            pre_rows.push(json!({
+                "mint": mint,
+                "owner": who,
+                "uiTokenAmount": { "amount": before.to_string() }
+            }));
+            post_rows.push(json!({
+                "mint": mint,
+                "owner": who,
+                "uiTokenAmount": { "amount": after.to_string() }
+            }));
+        }
+        json!({
+            "blockTime": 1,
+            "meta": {
+                "err": null,
+                "logMessages": logs,
+                "preTokenBalances": pre_rows,
+                "postTokenBalances": post_rows,
+                "innerInstructions": []
+            },
+            "transaction": { "message": { "instructions": [] } }
+        })
+    }
+
+    #[test]
+    fn mint_deposit_shows_without_parsed_transfer() {
+        let owner = "Owner1111111111111111111111111111111111111";
+        let mint = "Mint11111111111111111111111111111111111111";
+        let tx = balance_tx(
+            &[
+                "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [1]",
+                "Program log: Instruction: MintToChecked",
+                "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+            ],
+            owner,
+            mint,
+            0,
+            50_000_000,
+            &[],
+        );
+        let got = classify_tx(
+            &tx,
+            "sig",
+            owner,
+            &[],
+            mint,
+            "Vault1111111111111111111111111111111111111",
+        );
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].kind, ChainActivityKind::Deposit);
+        assert_eq!(got[0].amount_micro, 50_000_000);
+    }
+
+    #[test]
+    fn join_debit_is_lobby_entry_even_without_parsed_cpi() {
+        let owner = "Owner1111111111111111111111111111111111111";
+        let mint = "Mint11111111111111111111111111111111111111";
+        let vault = "Vault1111111111111111111111111111111111111";
+        let invoke = format!("Program {vault} invoke [1]");
+        let success = format!("Program {vault} success");
+        let tx = balance_tx(
+            &[
+                &invoke,
+                "Program log: Instruction: Join",
+                "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]",
+                "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+                &success,
+            ],
+            owner,
+            mint,
+            50_000_000,
+            45_000_000,
+            &[],
+        );
+        let got = classify_tx(&tx, "sig", owner, &[], mint, vault);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].kind, ChainActivityKind::VaultJoin);
+        assert_eq!(got[0].amount_micro, 5_000_000);
+    }
+
+    #[test]
+    fn dest_fee_claim_uses_balance_delta_when_moves_missing() {
+        let owner = "Dev111111111111111111111111111111111111111";
+        let winner = "Win111111111111111111111111111111111111111";
+        let mint = "Mint11111111111111111111111111111111111111";
+        let vault = "Vault1111111111111111111111111111111111111";
+        let invoke = format!("Program {vault} invoke [1]");
+        let success = format!("Program {vault} success");
+        let tx = balance_tx(
+            &[&invoke, "Program log: Instruction: Claim", &success],
+            owner,
+            mint,
+            0,
+            140_000,
+            &[(winner, 0, 6_510_000)],
+        );
+        let got = classify_tx(&tx, "sig", owner, &[], mint, vault);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].kind, ChainActivityKind::VaultDevFee);
+        assert_eq!(got[0].amount_micro, 140_000);
     }
 }
