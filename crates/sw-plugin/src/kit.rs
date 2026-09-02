@@ -240,13 +240,11 @@ impl GameResults {
     }
 
     pub fn from_game_states(mut states: Vec<GamePlayerState>) -> Self {
-        states.sort_by(|a, b| {
-            match (a.is_eliminated, b.is_eliminated) {
-                (false, true) => std::cmp::Ordering::Less,
-                (true, false) => std::cmp::Ordering::Greater,
-                (false, false) => std::cmp::Ordering::Equal,
-                (true, true) => b.eliminated_at.cmp(&a.eliminated_at),
-            }
+        states.sort_by(|a, b| match (a.is_eliminated, b.is_eliminated) {
+            (false, true) => std::cmp::Ordering::Less,
+            (true, false) => std::cmp::Ordering::Greater,
+            (false, false) => std::cmp::Ordering::Equal,
+            (true, true) => b.eliminated_at.cmp(&a.eliminated_at),
         });
 
         let rankings = states

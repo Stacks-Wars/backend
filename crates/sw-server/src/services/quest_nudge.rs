@@ -4,6 +4,8 @@ use chrono::Utc;
 use serde::Serialize;
 use sw_domain::UserId;
 
+use tracing::warn;
+
 use crate::data::quest_nudges::{QuestNudgeRepo, unique_user_ids};
 use crate::error::AppResult;
 use crate::quests::period;
@@ -24,9 +26,14 @@ pub struct DailyNudgeResult {
 pub async fn start(state: AppState) -> AppResult<DailyNudgeResult> {
     let clock = period::daily(Utc::now());
     let period_id = clock.id.clone();
-    let subs = QuestNudgeRepo::new(state.db.clone())
-        .claim_and_list(&period_id, clock.starts_at)
-        .await?;
+    let repo = QuestNudgeRepo::new(state.db.clone());
+    let push_on = state.push.enabled();
+    let subs = if push_on {
+        repo.claim_and_list(&period_id, clock.starts_at).await?
+    } else {
+        warn!("web push disabled; daily quest nudge will not claim send slots");
+        repo.list_eligible(&period_id, clock.starts_at).await?
+    };
     let user_ids = unique_user_ids(&subs);
     let targeted = user_ids.len();
 

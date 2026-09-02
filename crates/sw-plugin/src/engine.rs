@@ -43,11 +43,7 @@ pub trait GameEngine: Send + Sync {
         action: Value,
     ) -> PluginResult<()>;
 
-    async fn handle_player_quit(
-        &mut self,
-        host: GameHostRef,
-        user_id: UserId,
-    ) -> PluginResult<()>;
+    async fn handle_player_quit(&mut self, host: GameHostRef, user_id: UserId) -> PluginResult<()>;
 
     async fn get_game_state(&self, user_id: Option<UserId>) -> PluginResult<Value>;
 

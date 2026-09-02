@@ -16,9 +16,56 @@ impl QuestNudgeRepo {
         Self { pool }
     }
 
+    /// Eligible subscriptions without claiming a send slot. Used when Web Push
+    /// is unavailable so a later cron can still send the OS banner.
+    pub async fn list_eligible(
+        &self,
+        period_id: &str,
+        day_start: DateTime<Utc>,
+    ) -> AppResult<Vec<PushSubscription>> {
+        sqlx::query_as::<_, PushSubscription>(
+            r#"
+            WITH eligible AS (
+                SELECT DISTINCT u.id AS user_id
+                FROM users u
+                INNER JOIN push_subscriptions s ON s.user_id = u.id
+                WHERE u.deleted_at IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM match_players mp
+                      JOIN matches m ON m.id = mp.match_id
+                      WHERE mp.user_id = u.id
+                        AND m.player_count >= 2
+                        AND m.finished_at >= $1
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM quest_claims c
+                      WHERE c.user_id = u.id
+                        AND c.period_kind = 'daily'
+                        AND c.period_id = $2
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM quest_nudges n
+                      WHERE n.user_id = u.id
+                        AND n.period_id = $2
+                  )
+            )
+            SELECT s.endpoint, s.user_id, s.p256dh, s.auth, s.user_agent
+            FROM push_subscriptions s
+            INNER JOIN eligible e ON e.user_id = s.user_id
+            "#,
+        )
+        .bind(day_start)
+        .bind(period_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|err| AppError::Internal(err.into()))
+    }
+
     /// Insert nudge rows for eligible users who have not been sent today, and
-    /// return their push subscriptions. Eligible = signed-up device, not
-    /// deleted, no qualifying match today, no daily claim today.
+    /// return their push subscriptions. Only call this when Web Push can send.
     pub async fn claim_and_list(
         &self,
         period_id: &str,
@@ -45,6 +92,12 @@ impl QuestNudgeRepo {
                       WHERE c.user_id = u.id
                         AND c.period_kind = 'daily'
                         AND c.period_id = $2
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM quest_nudges n
+                      WHERE n.user_id = u.id
+                        AND n.period_id = $2
                   )
             ),
             inserted AS (
