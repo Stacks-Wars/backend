@@ -134,6 +134,10 @@ pub mod sw_vault {
                 winner_amt,
                 decimals,
             )?;
+            emit!(VaultClaim {
+                recipient: ctx.accounts.player.key(),
+                amount: winner_amt,
+            });
         }
         if platform_amt > 0 {
             token::transfer_checked(
@@ -166,6 +170,10 @@ pub mod sw_vault {
                 dev_amt,
                 decimals,
             )?;
+            emit!(VaultDevFee {
+                recipient: ctx.accounts.dev.key(),
+                amount: dev_amt,
+            });
         }
 
         ctx.accounts.escrow.pot = ctx
@@ -466,6 +474,20 @@ pub struct Seat {
     pub path_hash: [u8; 32],
     pub amount: u64,
     pub bump: u8,
+}
+
+/// Claim legs stay in one atomic instruction. Indexers read these from
+/// `Program data:` logs instead of guessing from inner token CPIs.
+#[event]
+pub struct VaultClaim {
+    pub recipient: Pubkey,
+    pub amount: u64,
+}
+
+#[event]
+pub struct VaultDevFee {
+    pub recipient: Pubkey,
+    pub amount: u64,
 }
 
 #[error_code]

@@ -1,62 +1,44 @@
 //! Solana USDC balance + activity for custodial wallets.
 //! Hiro stays in the Stacks adapter.
 
+use std::str::FromStr;
+
+use base64::Engine;
 use chrono::Utc;
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+use solana_pubkey::Pubkey;
 use sw_domain::{ChainActivityItem, ChainActivityKind, ChainId, UserId, WalletBalance};
 
 use crate::data::users::PgUserRepo;
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
+const TOKEN_PROGRAM: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+const ATA_PROGRAM: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
+
 #[derive(Debug, Deserialize)]
 struct RpcEnvelope<T> {
     result: Option<T>,
+    error: Option<RpcErrorBody>,
 }
 
 #[derive(Debug, Deserialize)]
-struct TokenAccounts {
-    value: Vec<TokenAccount>,
+struct RpcErrorBody {
+    code: Option<i64>,
+    message: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-struct TokenAccount {
-    pubkey: String,
-    account: TokenAccountBody,
-}
-
-#[derive(Debug, Deserialize)]
-struct TokenAccountBody {
-    data: TokenAccountData,
-}
-
-#[derive(Debug, Deserialize)]
-struct TokenAccountData {
-    parsed: TokenParsed,
-}
-
-#[derive(Debug, Deserialize)]
-struct TokenParsed {
-    info: TokenInfo,
-}
-
-#[derive(Debug, Deserialize)]
-struct TokenInfo {
-    #[serde(rename = "tokenAmount")]
-    token_amount: TokenAmount,
-}
-
-#[derive(Debug, Deserialize)]
-struct TokenAmount {
-    amount: String,
+struct HeliusTxPage {
+    data: Vec<Value>,
 }
 
 #[derive(Debug, Deserialize)]
 struct SigInfo {
     signature: String,
-    #[serde(rename = "blockTime")]
-    block_time: Option<i64>,
 }
 
 pub async fn get_balance(state: &AppState, user_id: UserId) -> AppResult<WalletBalance> {
@@ -65,19 +47,16 @@ pub async fn get_balance(state: &AppState, user_id: UserId) -> AppResult<WalletB
         .await?
         .ok_or(AppError::NotFound("custodial wallet not found"))?;
 
-    let available_micro = match fetch_usdc_amount(
+    let available_micro = fetch_usdc_amount(
         &state.config.solana_rpc_url,
         &state.config.solana_usdc_mint,
         &wallet.address,
     )
     .await
-    {
-        Ok(amount) => amount,
-        Err(err) => {
-            tracing::warn!(error = %err, "solana USDC balance read failed; serving 0");
-            0
-        }
-    };
+    .map_err(|err| {
+        tracing::error!(error = %err, "solana USDC balance read failed");
+        AppError::BadRequest(format!("unable to query wallet balance ({err})"))
+    })?;
 
     Ok(WalletBalance {
         user_id,
@@ -99,111 +78,123 @@ pub async fn list_activity(
         .await?
         .ok_or(AppError::NotFound("custodial wallet not found"))?;
 
-    let atas = match fetch_atas(
-        &state.config.solana_rpc_url,
-        &state.config.solana_usdc_mint,
-        &wallet.address,
-    )
-    .await
-    {
-        Ok(atas) => atas,
+    let ata = match usdc_ata(&wallet.address, &state.config.solana_usdc_mint) {
+        Ok(ata) => ata,
         Err(err) => {
-            tracing::warn!(error = %err, "solana token accounts read failed");
+            tracing::warn!(error = %err, "solana USDC ATA derive failed");
             return Ok(Vec::new());
         }
     };
-    if atas.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let mut signatures: Vec<(String, Option<i64>)> = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    for ata in &atas {
-        match fetch_signatures(&state.config.solana_rpc_url, ata, limit.clamp(1, 50)).await {
-            Ok(sigs) => {
-                for sig in sigs {
-                    if seen.insert(sig.signature.clone()) {
-                        signatures.push((sig.signature, sig.block_time));
-                    }
-                }
+    let cap = limit.clamp(1, 50);
+    let txs =
+        match fetch_activity_txs(&state.config.solana_rpc_url, &wallet.address, &ata, cap).await {
+            Ok(txs) => txs,
+            Err(err) => {
+                tracing::warn!(error = %err, ata, "solana activity read failed");
+                return Ok(Vec::new());
             }
-            Err(err) => tracing::warn!(error = %err, ata, "solana signatures read failed"),
-        }
-    }
-    signatures.sort_by(|a, b| b.1.cmp(&a.1));
-    signatures.truncate(limit.clamp(1, 50) as usize);
+        };
 
     let vault = state.config.solana_vault_program_id.as_str();
     let mint = state.config.solana_usdc_mint.as_str();
+    let atas = [ata];
     let mut out = Vec::new();
-    for (signature, _) in signatures {
-        match fetch_parsed_tx(&state.config.solana_rpc_url, &signature).await {
-            Ok(Some(tx)) => {
-                out.extend(classify_tx(
-                    &tx,
-                    &signature,
-                    &wallet.address,
-                    &atas,
-                    mint,
-                    vault,
-                ));
-            }
-            Ok(None) => {}
-            Err(err) => tracing::warn!(error = %err, signature, "solana tx read failed"),
-        }
+    for (signature, tx) in txs {
+        out.extend(classify_tx(
+            &tx,
+            &signature,
+            &wallet.address,
+            &atas,
+            mint,
+            vault,
+        ));
     }
     out.sort_by(|a, b| b.block_time.cmp(&a.block_time));
     Ok(out)
 }
 
-async fn fetch_usdc_amount(rpc_url: &str, mint: &str, owner: &str) -> Result<i64, String> {
-    let client = reqwest::Client::new();
-    let envelope: RpcEnvelope<TokenAccounts> = client
-        .post(rpc_url)
-        .json(&json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "getTokenAccountsByOwner",
-            "params": [owner, { "mint": mint }, { "encoding": "jsonParsed" }]
-        }))
-        .send()
-        .await
-        .map_err(|e| e.to_string())?
-        .json()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let Some(result) = envelope.result else {
-        return Ok(0);
-    };
-    let mut total: i64 = 0;
-    for account in result.value {
-        let raw = account.account.data.parsed.info.token_amount.amount;
-        total = total.saturating_add(raw.parse().unwrap_or(0));
-    }
-    Ok(total)
+fn usdc_ata(owner: &str, mint: &str) -> Result<String, String> {
+    let owner = Pubkey::from_str(owner).map_err(|e| e.to_string())?;
+    let mint = Pubkey::from_str(mint).map_err(|e| e.to_string())?;
+    let token = Pubkey::from_str(TOKEN_PROGRAM).map_err(|e| e.to_string())?;
+    let ata_program = Pubkey::from_str(ATA_PROGRAM).map_err(|e| e.to_string())?;
+    let (ata, _) = Pubkey::find_program_address(
+        &[owner.as_ref(), token.as_ref(), mint.as_ref()],
+        &ata_program,
+    );
+    Ok(ata.to_string())
 }
 
-async fn fetch_atas(rpc_url: &str, mint: &str, owner: &str) -> Result<Vec<String>, String> {
-    let client = reqwest::Client::new();
-    let envelope: RpcEnvelope<TokenAccounts> = client
-        .post(rpc_url)
-        .json(&json!({
+fn rpc_error_message(err: &RpcErrorBody) -> String {
+    let msg = err.message.as_deref().unwrap_or("rpc error");
+    match err.code {
+        Some(code) => format!("{msg} ({code})"),
+        None => msg.to_owned(),
+    }
+}
+
+async fn rpc_call<T: DeserializeOwned>(
+    rpc_url: &str,
+    method: &str,
+    params: Value,
+) -> Result<T, String> {
+    let envelope = rpc_envelope::<T>(
+        rpc_url,
+        &json!({
             "jsonrpc": "2.0",
             "id": 1,
-            "method": "getTokenAccountsByOwner",
-            "params": [owner, { "mint": mint }, { "encoding": "jsonParsed" }]
-        }))
+            "method": method,
+            "params": params,
+        }),
+    )
+    .await?;
+    if let Some(err) = envelope.error {
+        return Err(format!("{method}: {}", rpc_error_message(&err)));
+    }
+    envelope
+        .result
+        .ok_or_else(|| format!("{method} returned no result"))
+}
+
+async fn rpc_envelope<T: DeserializeOwned>(
+    rpc_url: &str,
+    body: &Value,
+) -> Result<RpcEnvelope<T>, String> {
+    let client = reqwest::Client::new();
+    client
+        .post(rpc_url)
+        .json(body)
         .send()
         .await
         .map_err(|e| e.to_string())?
         .json()
         .await
-        .map_err(|e| e.to_string())?;
-    Ok(envelope
-        .result
-        .map(|r| r.value.into_iter().map(|a| a.pubkey).collect())
-        .unwrap_or_default())
+        .map_err(|e| e.to_string())
+}
+
+/// SPL amount for `mint`. Missing ATA is 0, not an RPC failure.
+async fn fetch_usdc_amount(rpc_url: &str, mint: &str, owner: &str) -> Result<i64, String> {
+    let result: Value = rpc_call(
+        rpc_url,
+        "getTokenAccountsByOwner",
+        json!([
+            owner,
+            { "mint": mint },
+            { "encoding": "jsonParsed", "commitment": "confirmed" }
+        ]),
+    )
+    .await?;
+    let Some(accounts) = result.get("value").and_then(Value::as_array) else {
+        return Ok(0);
+    };
+    let Some(first) = accounts.first() else {
+        return Ok(0);
+    };
+    let amount = first
+        .pointer("/account/data/parsed/info/tokenAmount/amount")
+        .and_then(Value::as_str)
+        .unwrap_or("0");
+    amount.parse().map_err(|e| format!("token amount: {e}"))
 }
 
 async fn fetch_signatures(
@@ -211,29 +202,160 @@ async fn fetch_signatures(
     address: &str,
     limit: u32,
 ) -> Result<Vec<SigInfo>, String> {
+    rpc_call(
+        rpc_url,
+        "getSignaturesForAddress",
+        json!([address, { "limit": limit }]),
+    )
+    .await
+}
+
+fn tx_rpc_opts() -> Value {
+    json!({
+        "encoding": "jsonParsed",
+        "commitment": "confirmed",
+        "maxSupportedTransactionVersion": 1
+    })
+}
+
+async fn fetch_activity_txs(
+    rpc_url: &str,
+    owner: &str,
+    ata: &str,
+    limit: u32,
+) -> Result<Vec<(String, Value)>, String> {
+    match fetch_helius_full_txs(rpc_url, owner, limit).await {
+        Ok(txs) => return Ok(txs),
+        Err(err) => tracing::warn!(
+            error = %err,
+            "helius getTransactionsForAddress unavailable; using signatures"
+        ),
+    }
+    fetch_txs_by_signatures(rpc_url, ata, limit).await
+}
+
+async fn fetch_helius_full_txs(
+    rpc_url: &str,
+    owner: &str,
+    limit: u32,
+) -> Result<Vec<(String, Value)>, String> {
+    let page: HeliusTxPage = rpc_call(
+        rpc_url,
+        "getTransactionsForAddress",
+        json!([
+            owner,
+            {
+                "transactionDetails": "full",
+                "sortOrder": "desc",
+                "limit": limit,
+                "encoding": "jsonParsed",
+                "maxSupportedTransactionVersion": 1,
+                "commitment": "confirmed",
+                "filters": {
+                    "tokenAccounts": "balanceChanged"
+                }
+            }
+        ]),
+    )
+    .await?;
+    let mut out = Vec::new();
+    for item in page.data {
+        let signature = item
+            .get("signature")
+            .and_then(Value::as_str)
+            .or_else(|| {
+                item.pointer("/transaction/signatures/0")
+                    .and_then(Value::as_str)
+            })
+            .unwrap_or("")
+            .to_owned();
+        if signature.is_empty() || item.get("meta").is_none() {
+            continue;
+        }
+        out.push((
+            signature,
+            json!({
+                "blockTime": item.get("blockTime"),
+                "meta": item.get("meta"),
+                "transaction": item.get("transaction"),
+            }),
+        ));
+    }
+    Ok(out)
+}
+
+async fn fetch_txs_by_signatures(
+    rpc_url: &str,
+    ata: &str,
+    limit: u32,
+) -> Result<Vec<(String, Value)>, String> {
+    let sigs = fetch_signatures(rpc_url, ata, limit).await?;
+    if sigs.is_empty() {
+        return Ok(Vec::new());
+    }
+    match fetch_parsed_txs_batch(rpc_url, &sigs).await {
+        Ok(txs) => Ok(txs),
+        Err(err) => {
+            tracing::warn!(error = %err, "solana batched getTransaction failed");
+            let mut out = Vec::new();
+            for sig in sigs {
+                match fetch_parsed_tx(rpc_url, &sig.signature).await {
+                    Ok(Some(tx)) => out.push((sig.signature, tx)),
+                    Ok(None) => {}
+                    Err(e) => {
+                        tracing::warn!(error = %e, signature = sig.signature, "solana tx read failed")
+                    }
+                }
+            }
+            Ok(out)
+        }
+    }
+}
+
+async fn fetch_parsed_txs_batch(
+    rpc_url: &str,
+    sigs: &[SigInfo],
+) -> Result<Vec<(String, Value)>, String> {
+    let body: Vec<Value> = sigs
+        .iter()
+        .enumerate()
+        .map(|(i, sig)| {
+            json!({
+                "jsonrpc": "2.0",
+                "id": i,
+                "method": "getTransaction",
+                "params": [sig.signature, tx_rpc_opts()]
+            })
+        })
+        .collect();
     let client = reqwest::Client::new();
-    let envelope: RpcEnvelope<Vec<SigInfo>> = client
+    let envelopes: Vec<RpcEnvelope<Value>> = client
         .post(rpc_url)
-        .json(&json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "getSignaturesForAddress",
-            "params": [address, { "limit": limit }]
-        }))
+        .json(&body)
         .send()
         .await
         .map_err(|e| e.to_string())?
         .json()
         .await
         .map_err(|e| e.to_string())?;
-    Ok(envelope.result.unwrap_or_default())
+    if let Some(err) = envelopes.iter().find_map(|e| e.error.as_ref()) {
+        return Err(format!("getTransaction: {}", rpc_error_message(err)));
+    }
+    let mut out = Vec::new();
+    for (i, envelope) in envelopes.into_iter().enumerate() {
+        if let Some(tx) = envelope.result {
+            if let Some(sig) = sigs.get(i) {
+                out.push((sig.signature.clone(), tx));
+            }
+        }
+    }
+    Ok(out)
 }
 
 async fn fetch_parsed_tx(rpc_url: &str, signature: &str) -> Result<Option<Value>, String> {
-    let client = reqwest::Client::new();
-    let envelope: RpcEnvelope<Value> = client
-        .post(rpc_url)
-        .json(&json!({
+    let envelope = rpc_envelope::<Value>(
+        rpc_url,
+        &json!({
             "jsonrpc": "2.0",
             "id": 1,
             "method": "getTransaction",
@@ -242,13 +364,12 @@ async fn fetch_parsed_tx(rpc_url: &str, signature: &str) -> Result<Option<Value>
                 "commitment": "confirmed",
                 "maxSupportedTransactionVersion": 1
             }]
-        }))
-        .send()
-        .await
-        .map_err(|e| e.to_string())?
-        .json()
-        .await
-        .map_err(|e| e.to_string())?;
+        }),
+    )
+    .await?;
+    if let Some(err) = envelope.error {
+        return Err(format!("getTransaction: {}", rpc_error_message(&err)));
+    }
     Ok(envelope.result)
 }
 
@@ -278,6 +399,27 @@ fn classify_tx(
         .unwrap_or_default();
     let vault_ix = instruction_name_from_logs(&logs, vault);
     let vault_touched = vault_program_in_logs(&logs, vault);
+    let mine_events: Vec<VaultEvent> = parse_vault_claim_events(&logs)
+        .into_iter()
+        .filter(|event| event.recipient == owner)
+        .collect();
+    if !failed && !mine_events.is_empty() {
+        return mine_events
+            .into_iter()
+            .map(|event| {
+                item(
+                    signature,
+                    event.kind,
+                    event.amount,
+                    Some(vault),
+                    Some(owner),
+                    status,
+                    block_time,
+                )
+            })
+            .filter(|row| row.amount_micro > 0)
+            .collect();
+    }
     let delta = owner_mint_delta(&meta, owner, mint);
 
     let mut moves = Vec::new();
@@ -361,37 +503,6 @@ fn classify_tx(
             status,
             block_time,
         )),
-        Some("Claim") if inbound > 0 => {
-            let max_out = moves
-                .iter()
-                .filter(|m| !m.ty.to_ascii_lowercase().contains("mintto") && m.amount > 0)
-                .map(|m| m.amount)
-                .max()
-                .unwrap_or(0)
-                .max(max_positive_owner_delta(&meta, mint));
-            let mut to_me: Vec<i64> = mine
-                .iter()
-                .filter(|m| {
-                    ata_hit(m.destination.as_ref()) && !m.ty.to_ascii_lowercase().contains("mintto")
-                })
-                .map(|m| m.amount)
-                .filter(|a| *a > 0)
-                .collect();
-            if to_me.is_empty() {
-                to_me.push(inbound);
-            }
-            for (kind, amount) in classify_claim_inflows(to_me, max_out) {
-                items.push(item(
-                    signature,
-                    kind,
-                    amount,
-                    Some(vault),
-                    Some(owner),
-                    status,
-                    block_time,
-                ));
-            }
-        }
         _ => {
             if outbound > 0 && vault_touched {
                 items.push(item(
@@ -403,20 +514,7 @@ fn classify_tx(
                     status,
                     block_time,
                 ));
-            } else if inbound > 0 && vault_touched {
-                let max_out = max_positive_owner_delta(&meta, mint).max(inbound);
-                for (kind, amount) in classify_claim_inflows(vec![inbound], max_out) {
-                    items.push(item(
-                        signature,
-                        kind,
-                        amount,
-                        Some(vault),
-                        Some(owner),
-                        status,
-                        block_time,
-                    ));
-                }
-            } else {
+            } else if inbound <= 0 || !vault_touched {
                 if minted > 0 {
                     items.push(item(
                         signature,
@@ -462,26 +560,57 @@ fn classify_tx(
     items
 }
 
-/// One claim tx pays winner + platform (2%) + optional game fee (≤5%).
-/// A lone inbound used to be labeled Winnings, so dest-fee-only receipts
-/// (game author, not winner) showed up in the wrong filter.
-fn classify_claim_inflows(mut to_me: Vec<i64>, max_out: i64) -> Vec<(ChainActivityKind, i64)> {
-    to_me.retain(|amount| *amount > 0);
-    to_me.sort_unstable_by(|a, b| b.cmp(a));
-    match to_me.as_slice() {
-        [winnings, fee, rest @ ..] if *fee > 0 && *winnings > *fee => {
-            let extra: i64 = rest.iter().copied().sum();
-            vec![
-                (ChainActivityKind::VaultClaim, *winnings),
-                (ChainActivityKind::VaultDevFee, *fee + extra),
-            ]
+struct VaultEvent {
+    kind: ChainActivityKind,
+    recipient: String,
+    amount: i64,
+}
+
+fn event_discriminator(name: &str) -> [u8; 8] {
+    let hash = Sha256::digest(format!("event:{name}").as_bytes());
+    hash[..8].try_into().expect("sha256 prefix")
+}
+
+fn parse_vault_claim_events(logs: &[Value]) -> Vec<VaultEvent> {
+    let claim = event_discriminator("VaultClaim");
+    let dev = event_discriminator("VaultDevFee");
+    let mut out = Vec::new();
+    for log in logs {
+        let Some(line) = log.as_str() else { continue };
+        let Some(payload) = line.strip_prefix("Program data: ") else {
+            continue;
+        };
+        let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(payload.trim()) else {
+            continue;
+        };
+        if bytes.len() < 48 {
+            continue;
         }
-        [only] if max_out > *only => {
-            vec![(ChainActivityKind::VaultDevFee, *only)]
+        let disc = &bytes[..8];
+        let kind = if disc == claim {
+            ChainActivityKind::VaultClaim
+        } else if disc == dev {
+            ChainActivityKind::VaultDevFee
+        } else {
+            continue;
+        };
+        let Ok(recipient_bytes) = <[u8; 32]>::try_from(&bytes[8..40]) else {
+            continue;
+        };
+        let Ok(amount_bytes) = <[u8; 8]>::try_from(&bytes[40..48]) else {
+            continue;
+        };
+        let amount = u64::from_le_bytes(amount_bytes) as i64;
+        if amount <= 0 {
+            continue;
         }
-        [only, ..] => vec![(ChainActivityKind::VaultClaim, *only)],
-        [] => Vec::new(),
+        out.push(VaultEvent {
+            kind,
+            recipient: Pubkey::new_from_array(recipient_bytes).to_string(),
+            amount,
+        });
     }
+    out
 }
 
 fn item(
@@ -573,33 +702,6 @@ fn owner_mint_delta(meta: &Value, owner: &str, mint: &str) -> i64 {
         - token_balance_sum(meta, "preTokenBalances", owner, mint)
 }
 
-fn max_positive_owner_delta(meta: &Value, mint: &str) -> i64 {
-    use std::collections::HashMap;
-    let mut pre = HashMap::<String, i64>::new();
-    let mut post = HashMap::<String, i64>::new();
-    let add = |map: &mut HashMap<String, i64>, key: &str| {
-        if let Some(rows) = meta.get(key).and_then(Value::as_array) {
-            for row in rows {
-                if row.get("mint").and_then(Value::as_str) != Some(mint) {
-                    continue;
-                }
-                let Some(owner) = row.get("owner").and_then(Value::as_str) else {
-                    continue;
-                };
-                *map.entry(owner.to_owned()).or_insert(0) +=
-                    json_amount(row.pointer("/uiTokenAmount/amount"));
-            }
-        }
-    };
-    add(&mut pre, "preTokenBalances");
-    add(&mut post, "postTokenBalances");
-    post.iter()
-        .map(|(owner, after)| after - pre.get(owner).copied().unwrap_or(0))
-        .filter(|delta| *delta > 0)
-        .max()
-        .unwrap_or(0)
-}
-
 fn collect_token_moves(instructions: Option<&Vec<Value>>, mint: &str, out: &mut Vec<TokenMove>) {
     let Some(instructions) = instructions else {
         return;
@@ -648,71 +750,36 @@ fn collect_token_moves(instructions: Option<&Vec<Value>>, mint: &str, out: &mut 
 mod tests {
     use super::*;
 
-    #[test]
-    fn dest_fee_only_claim_is_game_fee() {
-        let got = classify_claim_inflows(vec![30_000], 6_510_000);
-        assert_eq!(got, vec![(ChainActivityKind::VaultDevFee, 30_000)]);
-    }
-
-    #[test]
-    fn winner_inbound_is_winnings() {
-        let got = classify_claim_inflows(vec![6_510_000], 6_510_000);
-        assert_eq!(got, vec![(ChainActivityKind::VaultClaim, 6_510_000)]);
-    }
-
-    #[test]
-    fn winner_who_is_also_dev_splits_two_legs() {
-        let got = classify_claim_inflows(vec![6_510_000, 350_000], 6_510_000);
-        assert_eq!(
-            got,
-            vec![
-                (ChainActivityKind::VaultClaim, 6_510_000),
-                (ChainActivityKind::VaultDevFee, 350_000),
-            ]
-        );
-    }
-
-    fn balance_tx(
-        logs: &[&str],
-        owner: &str,
-        mint: &str,
-        pre: i64,
-        post: i64,
-        others: &[(&str, i64, i64)],
-    ) -> Value {
-        let mut pre_rows = vec![json!({
-            "mint": mint,
-            "owner": owner,
-            "uiTokenAmount": { "amount": pre.to_string() }
-        })];
-        let mut post_rows = vec![json!({
-            "mint": mint,
-            "owner": owner,
-            "uiTokenAmount": { "amount": post.to_string() }
-        })];
-        for (who, before, after) in others {
-            pre_rows.push(json!({
-                "mint": mint,
-                "owner": who,
-                "uiTokenAmount": { "amount": before.to_string() }
-            }));
-            post_rows.push(json!({
-                "mint": mint,
-                "owner": who,
-                "uiTokenAmount": { "amount": after.to_string() }
-            }));
-        }
+    fn balance_tx(logs: &[&str], owner: &str, mint: &str, pre: i64, post: i64) -> Value {
         json!({
             "blockTime": 1,
             "meta": {
                 "err": null,
                 "logMessages": logs,
-                "preTokenBalances": pre_rows,
-                "postTokenBalances": post_rows,
+                "preTokenBalances": [{
+                    "mint": mint,
+                    "owner": owner,
+                    "uiTokenAmount": { "amount": pre.to_string() }
+                }],
+                "postTokenBalances": [{
+                    "mint": mint,
+                    "owner": owner,
+                    "uiTokenAmount": { "amount": post.to_string() }
+                }],
                 "innerInstructions": []
             },
             "transaction": { "message": { "instructions": [] } }
         })
+    }
+
+    #[test]
+    fn rpc_envelope_surfaces_helius_unauthorized() {
+        let raw = r#"{"jsonrpc":"2.0","error":{"code":-32401,"message":"Unauthorized"},"id":1}"#;
+        let envelope: RpcEnvelope<Value> = serde_json::from_str(raw).unwrap();
+        assert!(envelope.result.is_none());
+        let err = envelope.error.expect("error body");
+        assert_eq!(err.code, Some(-32401));
+        assert_eq!(rpc_error_message(&err), "Unauthorized (-32401)");
     }
 
     #[test]
@@ -729,7 +796,6 @@ mod tests {
             mint,
             0,
             50_000_000,
-            &[],
         );
         let got = classify_tx(
             &tx,
@@ -763,7 +829,6 @@ mod tests {
             mint,
             50_000_000,
             45_000_000,
-            &[],
         );
         let got = classify_tx(&tx, "sig", owner, &[], mint, vault);
         assert_eq!(got.len(), 1);
@@ -771,25 +836,45 @@ mod tests {
         assert_eq!(got[0].amount_micro, 5_000_000);
     }
 
+    fn program_data_log(name: &str, recipient: Pubkey, amount: u64) -> String {
+        let mut bytes = Vec::with_capacity(48);
+        bytes.extend_from_slice(&event_discriminator(name));
+        bytes.extend_from_slice(recipient.as_ref());
+        bytes.extend_from_slice(&amount.to_le_bytes());
+        format!(
+            "Program data: {}",
+            base64::engine::general_purpose::STANDARD.encode(bytes)
+        )
+    }
+
     #[test]
-    fn dest_fee_claim_uses_balance_delta_when_moves_missing() {
-        let owner = "Dev111111111111111111111111111111111111111";
-        let winner = "Win111111111111111111111111111111111111111";
+    fn claim_events_label_winner_and_dev() {
+        let winner = Pubkey::new_from_array([1u8; 32]);
+        let dev = Pubkey::new_from_array([3u8; 32]);
+        let winner_s = winner.to_string();
+        let dev_s = dev.to_string();
         let mint = "Mint11111111111111111111111111111111111111";
         let vault = "Vault1111111111111111111111111111111111111";
         let invoke = format!("Program {vault} invoke [1]");
         let success = format!("Program {vault} success");
-        let tx = balance_tx(
-            &[&invoke, "Program log: Instruction: Claim", &success],
-            owner,
-            mint,
-            0,
-            140_000,
-            &[(winner, 0, 6_510_000)],
-        );
-        let got = classify_tx(&tx, "sig", owner, &[], mint, vault);
+        let logs = [
+            invoke.as_str(),
+            "Program log: Instruction: Claim",
+            &program_data_log("VaultClaim", winner, 6_510_000),
+            &program_data_log("VaultDevFee", dev, 350_000),
+            success.as_str(),
+        ];
+
+        let winner_tx = balance_tx(&logs, &winner_s, mint, 0, 6_510_000);
+        let got = classify_tx(&winner_tx, "sig", &winner_s, &[], mint, vault);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].kind, ChainActivityKind::VaultClaim);
+        assert_eq!(got[0].amount_micro, 6_510_000);
+
+        let dev_tx = balance_tx(&logs, &dev_s, mint, 0, 350_000);
+        let got = classify_tx(&dev_tx, "sig", &dev_s, &[], mint, vault);
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].kind, ChainActivityKind::VaultDevFee);
-        assert_eq!(got[0].amount_micro, 140_000);
+        assert_eq!(got[0].amount_micro, 350_000);
     }
 }

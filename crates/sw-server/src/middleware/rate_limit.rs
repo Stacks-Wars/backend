@@ -394,7 +394,7 @@ mod tests {
             vapid_public_key: None,
             vapid_private_key: None,
             vapid_subject: "mailto:contact@mail.stackswars.com".into(),
-            solana_rpc_url: "https://api.devnet.solana.com".into(),
+            solana_rpc_url: "https://devnet.helius-rpc.com/?api-key=test".into(),
             solana_usdc_mint: "2ztYALhLWs2Lg1bGRBje82RgiLhuH4ZbCimRWVeyxUaB".into(),
             solana_vault_program_id: "8NZHj9VH9JkqiAg19CK43ZLuK5hn5jXPBnLfbeKonqfy".into(),
             solana_platform_wallet: String::new(),
