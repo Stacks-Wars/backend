@@ -8,7 +8,8 @@ use tracing::{debug, warn};
 use uuid::Uuid;
 use web_push::{
     ContentEncoding, IsahcWebPushClient, PartialVapidSignatureBuilder, SubscriptionInfo,
-    URL_SAFE_NO_PAD, VapidSignatureBuilder, WebPushClient, WebPushError, WebPushMessageBuilder,
+    URL_SAFE_NO_PAD, Urgency, VapidSignatureBuilder, WebPushClient, WebPushError,
+    WebPushMessageBuilder,
 };
 
 use crate::config::Config;
@@ -104,6 +105,7 @@ impl PushService {
                     "title": title,
                     "body": body,
                     "url": format!("{}{}", inner.frontend_url, path),
+                    "silent": false,
                 }),
             )
             .await;
@@ -129,6 +131,7 @@ impl PushService {
             "body": QUEST_NUDGE_BODY,
             "url": format!("{}{}", inner.frontend_url, QUEST_NUDGE_PATH),
             "tag": quest_nudge_tag(period_id),
+            "silent": false,
             "actions": [{ "action": "open", "title": QUEST_NUDGE_CTA }],
         }))
     }
@@ -163,6 +166,7 @@ impl PushService {
                     "body": format!("{lobby_name} · {game_id}"),
                     "url": format!("{}/room/{}", inner.frontend_url, lobby_path),
                     "tag": tag,
+                    "silent": false,
                 }),
             )
             .await;
@@ -248,6 +252,7 @@ impl PushInner {
         let mut builder = WebPushMessageBuilder::new(&info);
         let bytes = serde_json::to_vec(payload).map_err(|_| WebPushError::InvalidResponse)?;
         builder.set_payload(ContentEncoding::Aes128Gcm, &bytes);
+        builder.set_urgency(Urgency::High);
         builder.set_vapid_signature(sig.build()?);
         self.client.send(builder.build()?).await
     }
