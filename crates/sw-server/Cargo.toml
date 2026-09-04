@@ -25,6 +25,9 @@ serde_json = { workspace = true }
 sqlx = { workspace = true }
 sw-domain = { workspace = true }
 sw-plugin = { workspace = true }
+solana-pubkey = { version = "2.4", default-features = false, features = ["std", "sha2", "curve25519"] }
+sha2 = "0.10"
+base64 = "0.22"
 sw_checkers = { workspace = true }
 sw_lexi_wars = { workspace = true }
 sw_ludo = { workspace = true }

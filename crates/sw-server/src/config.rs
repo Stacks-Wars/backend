@@ -131,8 +131,11 @@ impl Config {
                 vapid_subject
             };
 
-        let solana_rpc_url = std::env::var("SOLANA_RPC_URL")
-            .unwrap_or_else(|_| "https://api.devnet.solana.com".to_owned());
+        let solana_rpc_url = solana_rpc_url(
+            &std::env::var("SOLANA_NETWORK").unwrap_or_else(|_| "devnet".to_owned()),
+            std::env::var("SOLANA_RPC_URL").ok().as_deref(),
+            &required_env("HELIUS_API_KEY")?,
+        )?;
         let solana_usdc_mint = std::env::var("SOLANA_USDC_MINT").unwrap_or_else(|_| {
             // Platform test USDC on devnet. Override for mainnet Circle.
             "2ztYALhLWs2Lg1bGRBje82RgiLhuH4ZbCimRWVeyxUaB".to_owned()
@@ -194,6 +197,36 @@ impl Config {
     }
 }
 
+/// `SOLANA_RPC_URL` is a `{network}` template. `HELIUS_API_KEY` is the secret.
+/// Leftover public `api.*.solana.com` URLs fall back to Helius.
+fn solana_rpc_url(network: &str, template: Option<&str>, key: &str) -> Result<String> {
+    let key = key.trim();
+    if key.is_empty() {
+        return Err(anyhow!("HELIUS_API_KEY must be set"));
+    }
+    let cluster = match network.trim().to_lowercase().as_str() {
+        "mainnet" | "mainnet-beta" => "mainnet",
+        _ => "devnet",
+    };
+    let raw = template.map(str::trim).unwrap_or("");
+    let template = if raw.is_empty()
+        || raw.contains("api.devnet.solana.com")
+        || raw.contains("api.mainnet-beta.solana.com")
+        || raw.contains("api.testnet.solana.com")
+    {
+        "https://{network}.helius-rpc.com/"
+    } else {
+        raw
+    };
+    let host = template.replace("{network}", cluster);
+    let host = host
+        .split('?')
+        .next()
+        .unwrap_or(&host)
+        .trim_end_matches('/');
+    Ok(format!("{host}/?api-key={key}"))
+}
+
 fn parse_admin_emails(raw: Option<&str>) -> Vec<String> {
     let Some(raw) = raw else {
         return Vec::new();
@@ -220,4 +253,26 @@ fn required_env(key: &str) -> Result<String> {
         return Err(anyhow!("{key} must not be empty"));
     }
     Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn interpolates_devnet_template() {
+        let url = solana_rpc_url(
+            "devnet",
+            Some("https://{network}.helius-rpc.com/"),
+            "abc",
+        )
+        .unwrap();
+        assert_eq!(url, "https://devnet.helius-rpc.com/?api-key=abc");
+    }
+
+    #[test]
+    fn missing_api_key_fails() {
+        let err = solana_rpc_url("devnet", None, "  ").unwrap_err();
+        assert!(err.to_string().contains("HELIUS_API_KEY"));
+    }
 }
