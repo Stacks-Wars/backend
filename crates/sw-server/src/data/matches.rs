@@ -228,14 +228,19 @@ impl PgMatchRepo {
         Ok(rows)
     }
 
-    /// Aggregate lifetime numbers for a profile header.
+    /// Lifetime money stats from finished seats.
+    ///
+    /// Winnings are every prize paid out to this player — 1st, and 2nd/3rd when
+    /// the lobby splits the pot. P&L is prize minus stake on every seat, so
+    /// losses still pull the number down.
     pub async fn lifetime_totals(&self, user_id: UserId) -> AppResult<LifetimeTotals> {
         let row: Option<LifetimeTotalsRow> = sqlx::query_as(
             r#"
             SELECT COUNT(*) AS total_matches,
                    COUNT(*) FILTER (WHERE is_winner) AS total_wins,
                    COALESCE(SUM(prize_micro), 0)::bigint AS total_winnings_micro,
-                   COALESCE(SUM(prize_micro - entry_micro), 0)::bigint AS total_pnl_micro,
+                   COALESCE(SUM(prize_micro - entry_micro), 0)::bigint
+                       AS total_pnl_micro,
                    COALESCE(SUM(wars_point), 0)::bigint AS total_points
             FROM match_players
             WHERE user_id = $1
