@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 use sw_domain::{GameId, LeaderboardEntry, SeasonId};
 
 use crate::data::quest_claims::PgQuestRepo;
-use crate::data::seasons::{PgSeasonRepo, SeasonRepo};
 use crate::data::stats::PgStatsRepo;
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
@@ -57,20 +56,10 @@ struct LeaderboardResponse {
     offset: i64,
 }
 
-async fn resolve_season_id(state: &AppState, season_id: Option<i32>) -> AppResult<SeasonId> {
-    if let Some(id) = season_id {
-        return Ok(SeasonId(id));
-    }
-    PgSeasonRepo::new(state.db.clone())
-        .current()
-        .await?
-        .map(|s| s.id)
-        .ok_or(AppError::NotFound("no active season"))
-}
-
+/// `None` means every season (the season dropdown's All option).
 async fn fetch_leaderboard(
     state: &AppState,
-    season_id: SeasonId,
+    season_id: Option<SeasonId>,
     game_id: Option<String>,
     board: Board,
     limit: i64,
@@ -114,10 +103,9 @@ async fn leaderboard(
     State(state): State<AppState>,
     Query(query): Query<LeaderboardQuery>,
 ) -> AppResult<Json<LeaderboardResponse>> {
-    let season_id = resolve_season_id(&state, query.season_id).await?;
     let page = fetch_leaderboard(
         &state,
-        season_id,
+        query.season_id.map(SeasonId),
         query.game_id,
         query.board,
         query.limit,
@@ -134,7 +122,7 @@ async fn season_leaderboard(
 ) -> AppResult<Json<LeaderboardResponse>> {
     let page = fetch_leaderboard(
         &state,
-        SeasonId(season_id),
+        Some(SeasonId(season_id)),
         query.game_id,
         query.board,
         query.limit,

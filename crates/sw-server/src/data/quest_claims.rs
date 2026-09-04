@@ -187,18 +187,19 @@ impl PgQuestRepo {
 
     pub async fn leaderboard_quests(
         &self,
-        season_id: SeasonId,
+        season_id: Option<SeasonId>,
         limit: i64,
         offset: i64,
     ) -> AppResult<(Vec<LeaderboardEntry>, i64)> {
+        let season = season_id.map(|id| id.as_i32());
         let total = sqlx::query_scalar::<_, i64>(
             r#"
             SELECT COUNT(DISTINCT user_id)::bigint
             FROM quest_claims
-            WHERE season_id = $1
+            WHERE $1::int IS NULL OR season_id = $1
             "#,
         )
-        .bind(season_id.as_i32())
+        .bind(season)
         .fetch_one(&self.pool)
         .await
         .map_err(|err| AppError::Internal(err.into()))?;
@@ -216,13 +217,13 @@ impl PgQuestRepo {
                 u.avatar_url
             FROM quest_claims c
             JOIN users u ON u.id = c.user_id
-            WHERE c.season_id = $1
+            WHERE $1::int IS NULL OR c.season_id = $1
             GROUP BY u.id, u.username, u.display_name, u.avatar_url
             ORDER BY points DESC, u.id
             LIMIT $2 OFFSET $3
             "#,
         )
-        .bind(season_id.as_i32())
+        .bind(season)
         .bind(limit)
         .bind(offset)
         .fetch_all(&self.pool)
@@ -239,20 +240,23 @@ impl PgQuestRepo {
 
     pub async fn leaderboard_all(
         &self,
-        season_id: SeasonId,
+        season_id: Option<SeasonId>,
         limit: i64,
         offset: i64,
     ) -> AppResult<(Vec<LeaderboardEntry>, i64)> {
+        let season = season_id.map(|id| id.as_i32());
         let total = sqlx::query_scalar::<_, i64>(
             r#"
             SELECT COUNT(*)::bigint FROM (
-                SELECT user_id FROM user_game_stats WHERE season_id = $1
+                SELECT user_id FROM user_game_stats
+                WHERE $1::int IS NULL OR season_id = $1
                 UNION
-                SELECT user_id FROM quest_claims WHERE season_id = $1
+                SELECT user_id FROM quest_claims
+                WHERE $1::int IS NULL OR season_id = $1
             ) ids
             "#,
         )
-        .bind(season_id.as_i32())
+        .bind(season)
         .fetch_one(&self.pool)
         .await
         .map_err(|err| AppError::Internal(err.into()))?;
@@ -266,13 +270,13 @@ impl PgQuestRepo {
                        SUM(total_wins)::int AS total_wins,
                        SUM(total_pnl) AS total_pnl
                 FROM user_game_stats
-                WHERE season_id = $1
+                WHERE $1::int IS NULL OR season_id = $1
                 GROUP BY user_id
             ),
             quest AS (
                 SELECT user_id, SUM(reward_points)::bigint AS points
                 FROM quest_claims
-                WHERE season_id = $1
+                WHERE $1::int IS NULL OR season_id = $1
                 GROUP BY user_id
             )
             SELECT
@@ -296,7 +300,7 @@ impl PgQuestRepo {
             LIMIT $2 OFFSET $3
             "#,
         )
-        .bind(season_id.as_i32())
+        .bind(season)
         .bind(limit)
         .bind(offset)
         .fetch_all(&self.pool)
@@ -310,6 +314,59 @@ impl PgQuestRepo {
             .collect();
         Ok((items, total))
     }
+
+    /// Combined game + quest Wars Points and 1-based rank, matching `leaderboard_all`.
+    pub async fn user_season_all(
+        &self,
+        user_id: UserId,
+        season_id: SeasonId,
+    ) -> AppResult<Option<(i64, i64)>> {
+        let row: Option<SeasonAllStandingRow> = sqlx::query_as(
+            r#"
+            WITH game AS (
+                SELECT user_id, SUM(points) AS points
+                FROM user_game_stats
+                WHERE season_id = $1
+                GROUP BY user_id
+            ),
+            quest AS (
+                SELECT user_id, SUM(reward_points)::bigint AS points
+                FROM quest_claims
+                WHERE season_id = $1
+                GROUP BY user_id
+            ),
+            totals AS (
+                SELECT ids.user_id,
+                       (COALESCE(g.points, 0) + COALESCE(q.points, 0))::bigint AS points
+                FROM (
+                    SELECT user_id FROM game
+                    UNION
+                    SELECT user_id FROM quest
+                ) ids
+                LEFT JOIN game g ON g.user_id = ids.user_id
+                LEFT JOIN quest q ON q.user_id = ids.user_id
+            ),
+            ranked AS (
+                SELECT user_id, points,
+                       RANK() OVER (ORDER BY points DESC, user_id) AS rank
+                FROM totals
+            )
+            SELECT rank, points FROM ranked WHERE user_id = $2
+            "#,
+        )
+        .bind(season_id.as_i32())
+        .bind(user_id.as_uuid())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|err| AppError::Internal(err.into()))?;
+        Ok(row.map(|standing| (standing.rank, standing.points)))
+    }
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct SeasonAllStandingRow {
+    rank: i64,
+    points: i64,
 }
 
 pub async fn qualifying_matches<'e, E>(

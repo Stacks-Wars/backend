@@ -8,6 +8,7 @@ use uuid::Uuid;
 use crate::auth::AuthUser;
 use crate::data::matches::{LifetimeTotals, MatchHistoryItem, PgMatchRepo};
 use crate::data::push::PushSubscriptionRepo;
+use crate::data::quest_claims::PgQuestRepo;
 use crate::data::seasons::{PgSeasonRepo, SeasonRepo};
 use crate::data::stats::{PgStatsRepo, UserStatLine};
 use crate::data::users::{
@@ -226,6 +227,7 @@ struct ProfileResponse {
     stat_lines: Vec<UserStatLine>,
     current_season_id: Option<i32>,
     current_season_rank: Option<i64>,
+    current_season_points: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -458,6 +460,7 @@ async fn get_profile(
     let users = PgUserRepo::new(state.db.clone());
     let matches = PgMatchRepo::new(state.db.clone());
     let stats = PgStatsRepo::new(state.db.clone());
+    let quests = PgQuestRepo::new(state.db.clone());
     let seasons = PgSeasonRepo::new(state.db.clone());
 
     // Two waves of concurrent queries: the rank lookup needs the season id,
@@ -466,14 +469,14 @@ async fn get_profile(
     let user = user.ok_or(AppError::NotFound("user"))?;
 
     let season_id = current_season.as_ref().map(|season| season.id);
-    let (lifetime, recent_matches, favourites, stat_lines, season_rank) = tokio::try_join!(
+    let (lifetime, recent_matches, favourites, stat_lines, season_all) = tokio::try_join!(
         matches.lifetime_totals(user_id),
         matches.history_for_user(user_id, 10, 0),
         matches.favourite_games(user_id, 5),
         stats.user_stat_lines(user_id),
         async {
             match season_id {
-                Some(id) => stats.user_season_rank(user_id, id).await,
+                Some(id) => quests.user_season_all(user_id, id).await,
                 None => Ok(None),
             }
         },
@@ -495,7 +498,8 @@ async fn get_profile(
         favourite_games,
         stat_lines,
         current_season_id: current_season.map(|s| s.id.as_i32()),
-        current_season_rank: season_rank,
+        current_season_rank: season_all.map(|(rank, _)| rank),
+        current_season_points: season_all.map(|(_, points)| points).unwrap_or(0),
     }))
 }
 

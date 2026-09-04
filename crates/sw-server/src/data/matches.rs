@@ -228,55 +228,19 @@ impl PgMatchRepo {
         Ok(rows)
     }
 
-    /// Platform-wide recent results for the landing ticker.
-    pub async fn recent(&self, limit: i64) -> AppResult<Vec<RecentMatch>> {
-        let rows = sqlx::query_as::<_, RecentMatchRow>(
-            r#"
-            SELECT m.id AS match_id, m.lobby_path, m.game_id, m.pot_micro,
-                   m.player_count, m.finished_at,
-                   u.id AS winner_id, u.username AS winner_username,
-                   u.display_name AS winner_display_name,
-                   u.avatar_url AS winner_avatar_url,
-                   mp.prize_micro AS winner_prize_micro
-            FROM matches m
-            LEFT JOIN match_players mp
-                ON mp.match_id = m.id AND mp.is_winner = true
-            LEFT JOIN users u ON u.id = mp.user_id
-            ORDER BY m.finished_at DESC
-            LIMIT $1
-            "#,
-        )
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
-
-        Ok(rows
-            .into_iter()
-            .map(|r| RecentMatch {
-                match_id: r.match_id,
-                lobby_path: r.lobby_path,
-                game_id: r.game_id,
-                pot_micro: r.pot_micro,
-                player_count: r.player_count,
-                finished_at: r.finished_at,
-                winner_id: r.winner_id,
-                winner_username: r.winner_username,
-                winner_display_name: r.winner_display_name,
-                winner_avatar_url: r.winner_avatar_url,
-                winner_prize_micro: r.winner_prize_micro.unwrap_or(0),
-            })
-            .collect())
-    }
-
-    /// Aggregate lifetime numbers for a profile header.
+    /// Lifetime money stats from finished seats.
+    ///
+    /// Winnings are every prize paid out to this player — 1st, and 2nd/3rd when
+    /// the lobby splits the pot. P&L is prize minus stake on every seat, so
+    /// losses still pull the number down.
     pub async fn lifetime_totals(&self, user_id: UserId) -> AppResult<LifetimeTotals> {
         let row: Option<LifetimeTotalsRow> = sqlx::query_as(
             r#"
             SELECT COUNT(*) AS total_matches,
                    COUNT(*) FILTER (WHERE is_winner) AS total_wins,
                    COALESCE(SUM(prize_micro), 0)::bigint AS total_winnings_micro,
-                   COALESCE(SUM(prize_micro - entry_micro), 0)::bigint AS total_pnl_micro,
+                   COALESCE(SUM(prize_micro - entry_micro), 0)::bigint
+                       AS total_pnl_micro,
                    COALESCE(SUM(wars_point), 0)::bigint AS total_points
             FROM match_players
             WHERE user_id = $1
@@ -306,37 +270,6 @@ fn into_item(r: MatchHistoryRow) -> MatchHistoryItem {
         prize_micro: r.prize_micro,
         wars_point: r.wars_point,
     }
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RecentMatch {
-    pub match_id: Uuid,
-    pub lobby_path: String,
-    pub game_id: String,
-    pub pot_micro: i64,
-    pub player_count: i32,
-    pub finished_at: DateTime<Utc>,
-    pub winner_id: Option<Uuid>,
-    pub winner_username: Option<String>,
-    pub winner_display_name: Option<String>,
-    pub winner_avatar_url: Option<String>,
-    pub winner_prize_micro: i64,
-}
-
-#[derive(Debug, sqlx::FromRow)]
-struct RecentMatchRow {
-    match_id: Uuid,
-    lobby_path: String,
-    game_id: String,
-    pot_micro: i64,
-    player_count: i32,
-    finished_at: DateTime<Utc>,
-    winner_id: Option<Uuid>,
-    winner_username: Option<String>,
-    winner_display_name: Option<String>,
-    winner_avatar_url: Option<String>,
-    winner_prize_micro: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
