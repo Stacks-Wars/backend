@@ -139,7 +139,7 @@ impl TelegramNotifier {
             .map_err(|e| anyhow::anyhow!("{e}"))?
             .ok_or_else(|| anyhow::anyhow!("no active season"))?;
         let (entries, _) = PgStatsRepo::new(state.db.clone())
-            .leaderboard_overall(season.id, 10, 0)
+            .leaderboard_overall(Some(season.id), 10, 0)
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))?;
 

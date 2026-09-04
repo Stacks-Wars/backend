@@ -1,13 +1,12 @@
 use std::collections::HashMap;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::routing::get;
 use axum::{Json, Router};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use sw_domain::{GameId, GameMetadata};
 
 use crate::data::lobbies::PgLobbyRepo;
-use crate::data::matches::{PgMatchRepo, RecentMatch};
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
@@ -15,7 +14,6 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/", get(list_games))
         .route("/activity", get(list_activity))
-        .route("/recent-matches", get(list_recent_matches))
         .route("/{game_id}", get(get_game))
         .route("/{game_id}/activity", get(get_game_activity))
 }
@@ -86,22 +84,6 @@ async fn get_game_activity(
             .remove(&game_id)
             .unwrap_or_else(|| zeroed(&game_id)),
     ))
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RecentQuery {
-    limit: Option<i64>,
-}
-
-async fn list_recent_matches(
-    State(state): State<AppState>,
-    Query(params): Query<RecentQuery>,
-) -> AppResult<Json<Vec<RecentMatch>>> {
-    let items = PgMatchRepo::new(state.db.clone())
-        .recent(params.limit.unwrap_or(12).clamp(1, 50))
-        .await?;
-    Ok(Json(items))
 }
 
 /// Catalog listing backed by the in-process plugin registry (empty until games register).

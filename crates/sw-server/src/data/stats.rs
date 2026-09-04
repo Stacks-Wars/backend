@@ -147,48 +147,21 @@ impl PgStatsRepo {
             .collect())
     }
 
-    /// 1-based overall rank for a user in a season, if they have any stats.
-    pub async fn user_season_rank(
-        &self,
-        user_id: UserId,
-        season_id: SeasonId,
-    ) -> AppResult<Option<i64>> {
-        let rank: Option<i64> = sqlx::query_scalar(
-            r#"
-            WITH totals AS (
-                SELECT user_id, SUM(points) AS points
-                FROM user_game_stats
-                WHERE season_id = $1
-                GROUP BY user_id
-            ), ranked AS (
-                SELECT user_id, RANK() OVER (ORDER BY points DESC) AS rank
-                FROM totals
-            )
-            SELECT rank FROM ranked WHERE user_id = $2
-            "#,
-        )
-        .bind(season_id.as_i32())
-        .bind(user_id.as_uuid())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|err| AppError::Internal(err.into()))?;
-        Ok(rank)
-    }
-
     pub async fn leaderboard_overall(
         &self,
-        season_id: SeasonId,
+        season_id: Option<SeasonId>,
         limit: i64,
         offset: i64,
     ) -> AppResult<(Vec<LeaderboardEntry>, i64)> {
+        let season = season_id.map(|id| id.as_i32());
         let total = sqlx::query_scalar::<_, i64>(
             r#"
             SELECT COUNT(DISTINCT user_id)::bigint
             FROM user_game_stats
-            WHERE season_id = $1
+            WHERE $1::int IS NULL OR season_id = $1
             "#,
         )
-        .bind(season_id.as_i32())
+        .bind(season)
         .fetch_one(&self.pool)
         .await
         .map_err(|err| AppError::Internal(err.into()))?;
@@ -206,13 +179,13 @@ impl PgStatsRepo {
                 u.avatar_url
             FROM user_game_stats s
             JOIN users u ON u.id = s.user_id
-            WHERE s.season_id = $1
+            WHERE $1::int IS NULL OR s.season_id = $1
             GROUP BY u.id, u.username, u.display_name, u.avatar_url
             ORDER BY points DESC, total_wins DESC, u.id
             LIMIT $2 OFFSET $3
             "#,
         )
-        .bind(season_id.as_i32())
+        .bind(season)
         .bind(limit)
         .bind(offset)
         .fetch_all(&self.pool)
@@ -230,19 +203,20 @@ impl PgStatsRepo {
 
     pub async fn leaderboard_by_game(
         &self,
-        season_id: SeasonId,
+        season_id: Option<SeasonId>,
         game_id: &GameId,
         limit: i64,
         offset: i64,
     ) -> AppResult<(Vec<LeaderboardEntry>, i64)> {
+        let season = season_id.map(|id| id.as_i32());
         let total = sqlx::query_scalar::<_, i64>(
             r#"
-            SELECT COUNT(*)::bigint
+            SELECT COUNT(DISTINCT user_id)::bigint
             FROM user_game_stats
-            WHERE season_id = $1 AND game_id = $2
+            WHERE ($1::int IS NULL OR season_id = $1) AND game_id = $2
             "#,
         )
-        .bind(season_id.as_i32())
+        .bind(season)
         .bind(game_id.as_str())
         .fetch_one(&self.pool)
         .await
@@ -252,21 +226,22 @@ impl PgStatsRepo {
             r#"
             SELECT
                 u.id AS user_id,
-                s.points,
-                s.total_matches,
-                s.total_wins,
-                s.total_pnl,
+                COALESCE(SUM(s.points), 0)::bigint AS points,
+                COALESCE(SUM(s.total_matches), 0)::int AS total_matches,
+                COALESCE(SUM(s.total_wins), 0)::int AS total_wins,
+                COALESCE(SUM(s.total_pnl), 0)::bigint AS total_pnl,
                 u.username,
                 u.display_name,
                 u.avatar_url
             FROM user_game_stats s
             JOIN users u ON u.id = s.user_id
-            WHERE s.season_id = $1 AND s.game_id = $2
-            ORDER BY s.points DESC, s.total_wins DESC, u.id
+            WHERE ($1::int IS NULL OR s.season_id = $1) AND s.game_id = $2
+            GROUP BY u.id, u.username, u.display_name, u.avatar_url
+            ORDER BY points DESC, total_wins DESC, u.id
             LIMIT $3 OFFSET $4
             "#,
         )
-        .bind(season_id.as_i32())
+        .bind(season)
         .bind(game_id.as_str())
         .bind(limit)
         .bind(offset)
