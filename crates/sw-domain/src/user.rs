@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::UserId;
 
-/// Platform user synced from Neon Auth.
+/// Platform user synced from Better Auth.
 ///
 /// On-chain keys live in `custodial_wallets`, one row per chain.
 #[derive(Debug, Clone, Serialize, Deserialize)]

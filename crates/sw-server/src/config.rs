@@ -4,7 +4,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result, anyhow};
 use sw_domain::ChainId;
 
-use crate::services::neon_jwt::{NeonJwtConfig, NeonJwtVerifier};
+use crate::services::jwt::{JwtConfig, JwtVerifier};
 
 /// Withdraw floor ($1 USDCx).
 pub const MIN_WITHDRAW_MICRO: i64 = 1_000_000;
@@ -29,8 +29,8 @@ pub struct Config {
     pub hiro_api_key: String,
     pub stacks_network: String,
     pub sw_vault_contract: String,
-    pub neon_auth_base_url: String,
-    pub jwt: NeonJwtConfig,
+    pub better_auth_url: String,
+    pub jwt: JwtConfig,
     pub admin_emails: Vec<String>,
     pub internal_api_secret: String,
     /// Public web app origin for deep links (`https://stackswars.com`).
@@ -75,8 +75,8 @@ impl Config {
             return Err(anyhow!("SW_VAULT_CONTRACT must be deployer.contract-name"));
         }
 
-        let neon_auth_base_url = required_env("NEON_AUTH_BASE_URL")?;
-        let jwt = NeonJwtConfig::from_auth_base_url(&neon_auth_base_url)
+        let better_auth_url = required_env("BETTER_AUTH_URL")?;
+        let jwt = JwtConfig::from_better_auth_url(&better_auth_url)
             .map_err(|e| anyhow!(e.to_string()))?;
 
         let admin_emails = parse_admin_emails(std::env::var("ADMIN").ok().as_deref());
@@ -157,7 +157,7 @@ impl Config {
             hiro_api_key,
             stacks_network,
             sw_vault_contract,
-            neon_auth_base_url,
+            better_auth_url,
             jwt,
             admin_emails,
             internal_api_secret,
@@ -174,8 +174,8 @@ impl Config {
         })
     }
 
-    pub fn jwt_verifier(&self) -> Arc<NeonJwtVerifier> {
-        NeonJwtVerifier::arc(self.jwt.clone())
+    pub fn jwt_verifier(&self) -> Arc<JwtVerifier> {
+        JwtVerifier::arc(self.jwt.clone())
     }
 
     /// Vault deployer principal — matches Clarity `PLATFORM-WALLET`.

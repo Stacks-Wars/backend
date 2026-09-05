@@ -6,7 +6,7 @@ use sw_plugin::GameRegistry;
 
 use crate::config::Config;
 use crate::engine::EngineRegistry;
-use crate::services::neon_jwt::NeonJwtVerifier;
+use crate::services::jwt::JwtVerifier;
 use crate::services::push::PushService;
 use crate::services::telegram::TelegramNotifier;
 use crate::ws::{SessionManager, SubscriptionManager};
@@ -22,7 +22,7 @@ pub struct AppState {
     pub subscriptions: Arc<SubscriptionManager>,
     /// Running match actors, keyed by lobby.
     pub engines: Arc<EngineRegistry>,
-    pub jwt: Arc<NeonJwtVerifier>,
+    pub jwt: Arc<JwtVerifier>,
     pub telegram: Arc<TelegramNotifier>,
     pub push: PushService,
 }

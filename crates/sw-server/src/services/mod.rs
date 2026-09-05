@@ -1,6 +1,6 @@
 pub mod hiro;
 pub mod lobby_ttl;
-pub mod neon_jwt;
+pub mod jwt;
 pub mod push;
 pub mod quest_nudge;
 pub mod realtime;
