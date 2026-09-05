@@ -1,4 +1,4 @@
-//! Neon Managed Better Auth JWT verification (EdDSA + JWKS).
+//! Better Auth JWT verification (EdDSA + JWKS).
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -12,58 +12,38 @@ use uuid::Uuid;
 use crate::error::{AppError, AppResult};
 
 #[derive(Debug, Clone)]
-pub struct NeonJwtConfig {
+pub struct JwtConfig {
     pub jwks_url: String,
     pub issuer: String,
     pub audience: String,
 }
 
-impl NeonJwtConfig {
-    /// Derive JWKS URL + iss/aud origin from `NEON_AUTH_BASE_URL`.
-    pub fn from_auth_base_url(base_url: &str) -> AppResult<Self> {
+impl JwtConfig {
+    /// JWKS + iss/aud from the Next.js Better Auth origin (`BETTER_AUTH_URL`).
+    pub fn from_better_auth_url(base_url: &str) -> AppResult<Self> {
         let base = base_url.trim().trim_end_matches('/');
         if base.is_empty() {
             return Err(AppError::Internal(anyhow::anyhow!(
-                "NEON_AUTH_BASE_URL is empty"
+                "BETTER_AUTH_URL is empty"
             )));
         }
-        let origin = auth_origin(base)?;
-        let jwks_url = format!("{base}/.well-known/jwks.json");
+        if !base.starts_with("https://") && !base.starts_with("http://") {
+            return Err(AppError::Internal(anyhow::anyhow!(
+                "BETTER_AUTH_URL must start with http(s)://"
+            )));
+        }
         Ok(Self {
-            jwks_url,
-            issuer: origin.clone(),
-            audience: origin,
+            jwks_url: format!("{base}/api/auth/jwks"),
+            issuer: base.to_owned(),
+            audience: base.to_owned(),
         })
     }
 }
 
-fn auth_origin(base_url: &str) -> AppResult<String> {
-    // e.g. https://ep-xxx.neonauth.../neondb/auth → https://ep-xxx.neonauth...
-    let without_scheme = base_url
-        .strip_prefix("https://")
-        .or_else(|| base_url.strip_prefix("http://"))
-        .ok_or_else(|| {
-            AppError::Internal(anyhow::anyhow!(
-                "NEON_AUTH_BASE_URL must start with http(s)://"
-            ))
-        })?;
-    let scheme = if base_url.starts_with("https://") {
-        "https"
-    } else {
-        "http"
-    };
-    let host = without_scheme
-        .split('/')
-        .next()
-        .filter(|h| !h.is_empty())
-        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("NEON_AUTH_BASE_URL missing host")))?;
-    Ok(format!("{scheme}://{host}"))
-}
-
 #[derive(Debug, Clone)]
-pub struct NeonClaims {
+pub struct JwtClaims {
     pub user_id: Uuid,
-    /// Present on typical Neon tokens; not required for auth (sig + sub suffice).
+    /// Present on typical Better Auth tokens; not required for auth (sig + sub suffice).
     pub email: Option<String>,
     pub email_verified: bool,
 }
@@ -83,14 +63,14 @@ struct JwksCache {
     fetched_at: Instant,
 }
 
-pub struct NeonJwtVerifier {
-    config: NeonJwtConfig,
+pub struct JwtVerifier {
+    config: JwtConfig,
     http: reqwest::Client,
     cache: RwLock<Option<JwksCache>>,
 }
 
-impl NeonJwtVerifier {
-    pub fn new(config: NeonJwtConfig) -> Self {
+impl JwtVerifier {
+    pub fn new(config: JwtConfig) -> Self {
         Self {
             config,
             http: reqwest::Client::new(),
@@ -98,11 +78,11 @@ impl NeonJwtVerifier {
         }
     }
 
-    pub fn arc(config: NeonJwtConfig) -> Arc<Self> {
+    pub fn arc(config: JwtConfig) -> Arc<Self> {
         Arc::new(Self::new(config))
     }
 
-    pub async fn verify(&self, token: &str) -> AppResult<NeonClaims> {
+    pub async fn verify(&self, token: &str) -> AppResult<JwtClaims> {
         let token = token.trim();
         if token.is_empty() {
             return Err(AppError::Unauthorized("missing bearer token"));
@@ -128,7 +108,7 @@ impl NeonJwtVerifier {
         let data = decode::<RawClaims>(token, &key, &validation)
             .map_err(|_| AppError::Unauthorized("invalid or expired token"))?;
 
-        let user_id = parse_neon_sub(&data.claims.sub)?;
+        let user_id = parse_jwt_sub(&data.claims.sub)?;
         let email = data
             .claims
             .email
@@ -138,7 +118,7 @@ impl NeonJwtVerifier {
             .map(|s| s.to_lowercase());
         let email_verified = data.claims.email_verified.unwrap_or(false);
 
-        Ok(NeonClaims {
+        Ok(JwtClaims {
             user_id,
             email,
             email_verified,
@@ -222,8 +202,8 @@ impl NeonJwtVerifier {
     }
 }
 
-/// Neon Auth `sub` is the primary key of `users`.
-pub fn parse_neon_sub(sub: &str) -> AppResult<Uuid> {
+/// Better Auth `sub` is the primary key of `users`.
+pub fn parse_jwt_sub(sub: &str) -> AppResult<Uuid> {
     let id = Uuid::parse_str(sub.trim())
         .map_err(|_| AppError::Unauthorized("token sub is not a uuid"))?;
     if id.is_nil() {

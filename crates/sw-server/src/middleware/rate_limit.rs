@@ -1,4 +1,4 @@
-//! Redis fixed-window rate limiting (60s) with IP / Neon JWT identity keys.
+//! Redis fixed-window rate limiting (60s) with IP / JWT identity keys.
 
 use std::net::SocketAddr;
 
@@ -13,7 +13,7 @@ use redis::aio::ConnectionManager;
 use serde::Serialize;
 use uuid::Uuid;
 
-use crate::services::neon_jwt::bearer_token_from_header;
+use crate::services::jwt::bearer_token_from_header;
 use crate::state::AppState;
 
 const WINDOW_SECS: i64 = 60;
@@ -318,7 +318,7 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use crate::infra::redis_client;
-    use crate::services::neon_jwt::NeonJwtConfig;
+    use crate::services::jwt::JwtConfig;
     use crate::state::AppState;
 
     const INTERNAL_SECRET: &str = "test-internal-secret";
@@ -380,11 +380,11 @@ mod tests {
             hiro_api_key: "test".into(),
             stacks_network: "mainnet".into(),
             sw_vault_contract: "SP000.sw-vault".into(),
-            neon_auth_base_url: "https://example.neonauth.test/neondb/auth".into(),
-            jwt: NeonJwtConfig {
-                jwks_url: "https://example.neonauth.test/.well-known/jwks.json".into(),
-                issuer: "https://example.neonauth.test".into(),
-                audience: "https://example.neonauth.test".into(),
+            better_auth_url: "http://localhost:3000".into(),
+            jwt: JwtConfig {
+                jwks_url: "http://localhost:3000/api/auth/jwks".into(),
+                issuer: "http://localhost:3000".into(),
+                audience: "http://localhost:3000".into(),
             },
             admin_emails: vec![],
             internal_api_secret: INTERNAL_SECRET.into(),

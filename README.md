@@ -17,13 +17,13 @@ Clients live in a separate frontend. This repository does **not** depend on thos
 - **Rust** + **Axum** (HTTP + WebSocket) on **Tokio**
 - **Postgres** via **SQLx** for durable data (required at boot)
 - **Redis** for lobby runtime state (required at boot)
-- **Neon Auth** on the frontend owns end-user sessions; this API verifies Neon JWTs (JWKS) on user and admin routes
+- **Better Auth** on the frontend owns end-user sessions; this API verifies those JWTs (JWKS) on user and admin routes
 
-`DATABASE_URL`, `REDIS_URL`, `HIRO_API_KEY`, `NEON_AUTH_BASE_URL`, `SW_VAULT_CONTRACT`, and `INTERNAL_API_SECRET` are required. The process exits on missing config or failed connect/ping. Use the same `INTERNAL_API_SECRET` in the Next.js app for server-to-server calls.
+`DATABASE_URL`, `REDIS_URL`, `HIRO_API_KEY`, `BETTER_AUTH_URL`, `SW_VAULT_CONTRACT`, and `INTERNAL_API_SECRET` are required. The process exits on missing config or failed connect/ping. Use the same `INTERNAL_API_SECRET` in the Next.js app for server-to-server calls.
 
 Optional Telegram companion: set both `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` to announce public lobbies, post match results, and serve `/leaderboard`. `FRONTEND_URL` controls deep links (default `https://stackswars.com`).
 
-SQL migrations live in `migrations/`. App users are upserted via `POST /users` (Bearer JWT; `id` = Neon `sub`). Custodial wallets live under `GET|POST /users/{id}/custodial-wallet`. Platform balances use `/wallet` (each chain's official explorer / RPC + Redis cache, chain activity, withdrawals) — vault escrow is on-chain via `SW_VAULT_CONTRACT`. Admin season routes require a verified JWT email on the `ADMIN` allowlist.
+SQL migrations live in `migrations/`. App users are upserted via `POST /users` (Bearer JWT; `id` = Better Auth `sub`). Custodial wallets live under `GET|POST /users/{id}/custodial-wallet`. Platform balances use `/wallet` (each chain's official explorer / RPC + Redis cache, chain activity, withdrawals) — vault escrow is on-chain via `SW_VAULT_CONTRACT`. Admin season routes require a verified JWT email on the `ADMIN` allowlist.
 
 ```
 clients ──HTTP/WS──► sw-server ──hosts──► GameEngine (from plugin crates)
@@ -81,7 +81,7 @@ Requirements: Rust stable (edition 2024 / recent toolchain).
 
 ```bash
 cp .env.example .env
-# set DATABASE_URL, REDIS_URL, HIRO_API_KEY, NEON_AUTH_BASE_URL, SW_VAULT_CONTRACT, INTERNAL_API_SECRET
+# set DATABASE_URL, REDIS_URL, HIRO_API_KEY, BETTER_AUTH_URL, SW_VAULT_CONTRACT, INTERNAL_API_SECRET
 cargo run -p sw-server
 ```
 
@@ -101,7 +101,7 @@ Railway uses `railway.toml` (`builder = DOCKERFILE`). Set at least:
 | `DATABASE_URL`        | Neon (or Railway Postgres)    |
 | `REDIS_URL`           | from Railway Redis            |
 | `HIRO_API_KEY`        |                               |
-| `NEON_AUTH_BASE_URL`  |                               |
+| `BETTER_AUTH_URL`     | Next.js origin (JWKS source)  |
 | `SW_VAULT_CONTRACT`   |                               |
 | `INTERNAL_API_SECRET` | same value as the Next.js app |
 | `FRONTEND_URL`        | production site origin        |

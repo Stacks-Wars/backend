@@ -1,4 +1,4 @@
-//! Authenticated caller extracted from Neon Auth JWT.
+//! Authenticated caller extracted from Better Auth JWT.
 
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
@@ -6,7 +6,7 @@ use sw_domain::UserId;
 use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
-use crate::services::neon_jwt::bearer_token_from_header;
+use crate::services::jwt::bearer_token_from_header;
 use crate::state::AppState;
 
 /// Cron / Next janitor auth via `x-internal-secret`.

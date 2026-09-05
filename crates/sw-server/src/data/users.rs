@@ -315,10 +315,14 @@ impl PgUserRepo {
         let row = sqlx::query_as::<_, UserRow>(
             r#"
             INSERT INTO users (id, email, display_name, avatar_url, email_verified_at)
-            VALUES ($1, $2, $3, $4, $5)
+            VALUES (
+                $1, $2,
+                COALESCE(NULLIF(BTRIM($3), ''), split_part($2, '@', 1)),
+                $4, $5
+            )
             ON CONFLICT (id) DO UPDATE SET
                 email = EXCLUDED.email,
-                display_name = COALESCE(EXCLUDED.display_name, users.display_name),
+                display_name = COALESCE(NULLIF(BTRIM(EXCLUDED.display_name), ''), users.display_name),
                 avatar_url = COALESCE(EXCLUDED.avatar_url, users.avatar_url),
                 email_verified_at = COALESCE(EXCLUDED.email_verified_at, users.email_verified_at),
                 updated_at = now()
@@ -685,8 +689,8 @@ impl PgUserRepo {
         Ok(())
     }
 
-    /// Scrub PII, drop custodial keys, and remove the Neon Auth identity so the
-    /// email can be used to sign up again. Keeps the `users` row for FK history.
+    /// Scrub PII, drop custodial keys, and drop Better Auth sessions/accounts so
+    /// the email can be used to sign up again. Keeps the `users` row for FK history.
     pub async fn anonymize(&self, id: UserId) -> AppResult<AnonymizeOutcome> {
         let mut tx = self
             .pool
@@ -696,13 +700,14 @@ impl PgUserRepo {
 
         #[derive(sqlx::FromRow)]
         struct DeleteSnapshot {
+            email: String,
             referred_by_user_id: Option<Uuid>,
             getting_started_completed_at: Option<DateTime<Utc>>,
         }
 
         let snap = sqlx::query_as::<_, DeleteSnapshot>(
             r#"
-            SELECT referred_by_user_id, getting_started_completed_at
+            SELECT email, referred_by_user_id, getting_started_completed_at
             FROM users
             WHERE id = $1 AND deleted_at IS NULL
             "#,
@@ -714,12 +719,6 @@ impl PgUserRepo {
         .ok_or(AppError::NotFound("user"))?;
 
         let tombstone = format!("deleted+{}@invalid", id.as_uuid());
-        let neon_email: Option<String> =
-            sqlx::query_scalar(r#"SELECT email FROM neon_auth."user" WHERE id = $1"#)
-                .bind(id.as_uuid())
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(|err| AppError::Internal(err.into()))?;
 
         let n = sqlx::query(
             r#"
@@ -727,6 +726,7 @@ impl PgUserRepo {
                 username = NULL,
                 display_name = 'Deleted player',
                 email = $2,
+                email_verified = false,
                 email_verified_at = NULL,
                 avatar_url = NULL,
                 lobby_alerts_enabled = false,
@@ -774,16 +774,19 @@ impl PgUserRepo {
             .await
             .map_err(|err| AppError::Internal(err.into()))?;
 
-        if let Some(email) = neon_email.as_deref() {
-            sqlx::query(r#"DELETE FROM neon_auth.verification WHERE identifier = $1"#)
-                .bind(email)
-                .execute(&mut *tx)
-                .await
-                .map_err(|err| AppError::Internal(err.into()))?;
-        }
+        sqlx::query(r#"DELETE FROM verifications WHERE identifier = $1"#)
+            .bind(&snap.email)
+            .execute(&mut *tx)
+            .await
+            .map_err(|err| AppError::Internal(err.into()))?;
 
-        // Frees `neon_auth.user.email` (unique). Sessions/accounts cascade.
-        sqlx::query(r#"DELETE FROM neon_auth."user" WHERE id = $1"#)
+        // Frees `users.email` (unique). Keep the row for FK history.
+        sqlx::query(r#"DELETE FROM sessions WHERE user_id = $1"#)
+            .bind(id.as_uuid())
+            .execute(&mut *tx)
+            .await
+            .map_err(|err| AppError::Internal(err.into()))?;
+        sqlx::query(r#"DELETE FROM accounts WHERE user_id = $1"#)
             .bind(id.as_uuid())
             .execute(&mut *tx)
             .await

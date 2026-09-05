@@ -18,7 +18,7 @@ use crate::data::users::{
 use crate::data::vault_drafts::{VaultDraft, VaultDraftRepo};
 use crate::error::{AppError, AppResult};
 use crate::services::hiro::HiroClient;
-use crate::services::neon_jwt::parse_neon_sub;
+use crate::services::jwt::parse_jwt_sub;
 use crate::services::push;
 use crate::state::AppState;
 use redis::AsyncCommands;
@@ -88,7 +88,7 @@ pub(crate) fn validate_username(raw: &str) -> AppResult<String> {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct UpsertUserBody {
-    /// Neon Auth `sub` (UUID v7). Must match Bearer token subject.
+    /// Better Auth `sub` (UUID). Must match Bearer token subject.
     id: Uuid,
     email: String,
     display_name: Option<String>,
@@ -245,7 +245,7 @@ async fn upsert_user(
     auth: AuthUser,
     Json(body): Json<UpsertUserBody>,
 ) -> AppResult<Json<UserResponse>> {
-    let id = parse_neon_sub(&body.id.to_string())?;
+    let id = parse_jwt_sub(&body.id.to_string())?;
     if id != auth.user_id.as_uuid() {
         return Err(AppError::Unauthorized("token subject mismatch"));
     }
