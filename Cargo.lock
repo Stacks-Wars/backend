@@ -716,7 +716,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2015,7 +2015,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2298,7 +2298,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3039,9 +3039,9 @@ dependencies = [
 
 [[package]]
 name = "sw_ludo"
-version = "1.0.1"
+version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d70413392a0632d0ebfccf0d7a19db99fe3cbe24249f9bdbb8de224972c2f99d"
+checksum = "eab9728c5fa7a3f9e2fc226928bb58b573a3a6a8e143ea29a59fc4197db166cd"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3057,9 +3057,9 @@ dependencies = [
 
 [[package]]
 name = "sw_ludo_rush"
-version = "1.0.1"
+version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2aac3dd737d5ac2c31316edb55aa6b69984ade96ff279d20aa48b6a13de7473c"
+checksum = "2d881db524a1122486f621c8e2324db3cf682cd828788624d2ff0f1bc774554f"
 dependencies = [
  "async-trait",
  "chrono",
