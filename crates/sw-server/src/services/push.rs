@@ -12,7 +12,7 @@ use web_push::{
     WebPushMessageBuilder,
 };
 
-use crate::config::Config;
+use crate::config::{Config, VAPID_SUBJECT};
 use crate::data::push::{PushSubscription, PushSubscriptionRepo};
 use sw_domain::{ChainId, UserId};
 
@@ -57,8 +57,8 @@ impl PushService {
                     (Ok(vapid), Ok(client)) => Self {
                         inner: Some(Arc::new(PushInner {
                             vapid,
-                            subject: config.vapid_subject.clone(),
-                            frontend_url: config.frontend_url.clone(),
+                            subject: VAPID_SUBJECT.to_owned(),
+                            frontend_url: config.app_url.clone(),
                             client,
                         })),
                     },

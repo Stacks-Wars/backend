@@ -37,4 +37,4 @@ EXPOSE 8080
 
 USER nobody
 
-CMD ["/app/sw-server"]
+CMD ["/app/sw-server", "--main"]

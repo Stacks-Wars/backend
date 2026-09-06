@@ -1,0 +1,16 @@
+[project]
+name = 'sw-vault'
+description = ''
+authors = []
+telemetry = false
+cache_dir = './.cache'
+
+[contracts.usdcx-dev]
+path = 'deployments/usdcx-dev.testnet.clar'
+clarity_version = 3
+epoch = '3.2'
+
+[contracts.sw-vault-v1]
+path = 'deployments/sw-vault-v1.testnet.clar'
+clarity_version = 4
+epoch = '3.3'

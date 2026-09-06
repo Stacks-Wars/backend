@@ -6,7 +6,7 @@ use sw_domain::{LobbyId, SeasonId, UserId};
 use uuid::Uuid;
 
 use crate::auth::{AuthUser, InternalSecret};
-use crate::config::{USDCX_ASSET_NAME, USDCX_CONTRACT};
+use crate::config::USDCX_ASSET_NAME;
 use crate::data::lobbies::PgLobbyRepo;
 use crate::data::lobby_runtime::PlayerStateRepo;
 use crate::data::seasons::{PgSeasonRepo, SeasonRepo, UpdateSeasonInput};
@@ -154,7 +154,7 @@ async fn expire_seat(
         let hiro = HiroClient::new(
             state.config.hiro_api_url.clone(),
             state.config.hiro_api_key.clone(),
-            USDCX_CONTRACT,
+            &state.config.usdcx_contract,
             USDCX_ASSET_NAME,
             Some(state.config.sw_vault_contract.clone()),
         );

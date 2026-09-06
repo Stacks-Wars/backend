@@ -12,7 +12,7 @@ use sw_plugin::EngineContext;
 use uuid::Uuid;
 
 use crate::auth::AuthUser;
-use crate::config::{MIN_ENTRY_MICRO, USDCX_ASSET_NAME, USDCX_CONTRACT};
+use crate::config::{MIN_ENTRY_MICRO, USDCX_ASSET_NAME};
 use crate::data::join_requests::{JoinRequest, JoinRequestRepo};
 use crate::data::lobbies::{
     LobbyQuery, MAX_ACTIVE_HOSTED_LOBBIES, PgLobbyRepo, generate_unique_lobby_path,
@@ -90,7 +90,7 @@ fn hiro_client(state: &AppState) -> HiroClient {
     HiroClient::new(
         state.config.hiro_api_url.clone(),
         state.config.hiro_api_key.clone(),
-        USDCX_CONTRACT,
+        &state.config.usdcx_contract,
         USDCX_ASSET_NAME,
         Some(state.config.sw_vault_contract.clone()),
     )
@@ -110,7 +110,7 @@ async fn verify_vault_join(
 ) -> AppResult<()> {
     match chain {
         ChainId::Solana => crate::services::solana_vault::assert_tx_ok(state, txid).await,
-        _ => {
+        ChainId::Stacks => {
             let hiro = hiro_client(state);
             let reader = vault_reader(state, &hiro);
             reader.assert_joined(path, player, paid, txid).await
@@ -127,7 +127,7 @@ async fn verify_vault_leave(
 ) -> AppResult<()> {
     match chain {
         ChainId::Solana => crate::services::solana_vault::assert_tx_ok(state, txid).await,
-        _ => {
+        ChainId::Stacks => {
             let hiro = hiro_client(state);
             let reader = vault_reader(state, &hiro);
             reader.assert_not_joined(path, player, txid).await
@@ -138,7 +138,7 @@ async fn verify_vault_leave(
 async fn verify_vault_claim(state: &AppState, chain: ChainId, txid: &str) -> AppResult<()> {
     match chain {
         ChainId::Solana => crate::services::solana_vault::assert_tx_ok(state, txid).await,
-        _ => {
+        ChainId::Stacks => {
             let hiro = hiro_client(state);
             let reader = vault_reader(state, &hiro);
             reader.assert_claim_tx(txid).await
@@ -162,7 +162,7 @@ async fn fresh_wallet_balance(
 ) -> AppResult<WalletBalance> {
     match chain {
         ChainId::Solana => crate::services::solana_chain::get_balance(state, user_id).await,
-        _ => {
+        ChainId::Stacks => {
             let svc =
                 WalletChainService::new(state.db.clone(), state.redis.clone(), hiro_client(state));
             svc.refresh_balance(user_id).await

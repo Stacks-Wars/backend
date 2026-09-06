@@ -903,7 +903,7 @@ async fn delete_account(
         let hiro = HiroClient::new(
             state.config.hiro_api_url.clone(),
             state.config.hiro_api_key.clone(),
-            crate::config::USDCX_CONTRACT,
+            &state.config.usdcx_contract,
             crate::config::USDCX_ASSET_NAME,
             Some(state.config.sw_vault_contract.clone()),
         );

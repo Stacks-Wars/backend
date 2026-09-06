@@ -19,17 +19,15 @@ pub struct JwtConfig {
 }
 
 impl JwtConfig {
-    /// JWKS + iss/aud from the Next.js Better Auth origin (`BETTER_AUTH_URL`).
-    pub fn from_better_auth_url(base_url: &str) -> AppResult<Self> {
+    /// JWKS + iss/aud from the Next.js Better Auth origin (`APP_URL`).
+    pub fn from_app_url(base_url: &str) -> AppResult<Self> {
         let base = base_url.trim().trim_end_matches('/');
         if base.is_empty() {
-            return Err(AppError::Internal(anyhow::anyhow!(
-                "BETTER_AUTH_URL is empty"
-            )));
+            return Err(AppError::Internal(anyhow::anyhow!("APP_URL is empty")));
         }
         if !base.starts_with("https://") && !base.starts_with("http://") {
             return Err(AppError::Internal(anyhow::anyhow!(
-                "BETTER_AUTH_URL must start with http(s)://"
+                "APP_URL must start with http(s)://"
             )));
         }
         Ok(Self {

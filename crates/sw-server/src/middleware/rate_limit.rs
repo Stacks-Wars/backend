@@ -365,22 +365,23 @@ mod tests {
 
     async fn test_state() -> AppState {
         let redis_url =
-            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
+            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6380".to_owned());
         let redis = redis_client::connect(&redis_url)
             .await
             .expect("redis required for rate_limit tests");
         let db = sqlx::PgPool::connect_lazy("postgres://localhost/sw_rate_limit_test")
             .expect("lazy pg pool");
         let config = Config {
+            is_dev: true,
             host: IpAddr::from([127, 0, 0, 1]),
             port: 0,
             database_url: "postgres://localhost/sw_rate_limit_test".into(),
             redis_url,
             hiro_api_url: "https://api.hiro.so".into(),
             hiro_api_key: "test".into(),
-            stacks_network: "mainnet".into(),
             sw_vault_contract: "SP000.sw-vault".into(),
-            better_auth_url: "http://localhost:3000".into(),
+            usdcx_contract: crate::config::USDCX_CONTRACT.into(),
+            app_url: "http://localhost:3000".into(),
             jwt: JwtConfig {
                 jwks_url: "http://localhost:3000/api/auth/jwks".into(),
                 issuer: "http://localhost:3000".into(),
@@ -388,12 +389,10 @@ mod tests {
             },
             admin_emails: vec![],
             internal_api_secret: INTERNAL_SECRET.into(),
-            frontend_url: "https://stackswars.com".into(),
             telegram_bot_token: None,
             telegram_chat_id: None,
             vapid_public_key: None,
             vapid_private_key: None,
-            vapid_subject: "mailto:contact@mail.stackswars.com".into(),
             solana_rpc_url: "https://devnet.helius-rpc.com/?api-key=test".into(),
             solana_usdc_mint: "2ztYALhLWs2Lg1bGRBje82RgiLhuH4ZbCimRWVeyxUaB".into(),
             solana_vault_program_id: "8NZHj9VH9JkqiAg19CK43ZLuK5hn5jXPBnLfbeKonqfy".into(),

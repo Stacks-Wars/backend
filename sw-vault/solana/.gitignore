@@ -2,3 +2,4 @@ target/
 .anchor/
 **/*.so
 .keys/
+play/*.so

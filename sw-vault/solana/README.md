@@ -1,7 +1,7 @@
 # Solana vault
 
 USDC escrow for paid Stacks Wars lobbies. Anchor 1.1. Players deposit USDC.
-The platform key (`SOLANA_WARS_KEY`, path `m/44'/501'/0'/0'`) is:
+The platform key (`SOLANA_KEY`, path `m/44'/501'/0'/0'`) is:
 
 - program deployer / upgrade authority
 - fee payer and rent payer (players never need SOL)
@@ -38,7 +38,7 @@ zero out the platform cut. After the first claim, join / leave / kick freeze
 
 ## Deploy
 
-Wallet: `SOLANA_WARS_KEY` → `.keys/wars-wallet.json` (gitignored).
+Wallet: `SOLANA_KEY` → `.keys/wars-wallet.json` (gitignored).
 Program id is `declare_id!` / `Anchor.toml`.
 
 ```sh

@@ -19,6 +19,11 @@ epoch = '3.3'
 path = 'contracts/usdcx-token.clar'
 clarity_version = 3
 epoch = '3.2'
+
+[contracts.usdcx-dev]
+path = 'contracts/usdcx-dev.clar'
+clarity_version = 3
+epoch = '3.2'
 [repl.analysis]
 passes = ['check_checker']
 

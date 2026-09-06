@@ -21,6 +21,7 @@ async fn main() -> anyhow::Result<()> {
     info!(
         host = %config.host,
         port = config.port,
+        dev = config.is_dev,
         "starting stacks wars server"
     );
 

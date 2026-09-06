@@ -289,7 +289,7 @@ impl HiroClient {
         self.vault_contract.as_deref()
     }
 
-    /// Deployer principal of `SW_VAULT_CONTRACT` — same as on-chain `PLATFORM-WALLET`.
+    /// Deployer principal of `STACKS_VAULT` — same as on-chain `PLATFORM-WALLET`.
     fn platform_wallet(&self) -> Option<&str> {
         self.vault_contract.as_deref()?.split('.').next()
     }

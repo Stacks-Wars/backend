@@ -43,7 +43,9 @@ impl<'a> VaultReader<'a> {
         Ok(parse_uint_result(&res)? as i64)
     }
 
-    /// Confirm tx succeeded and player is joined with expected paid amount.
+    /// Confirm the player is seated with the expected paid amount.
+    /// A later retry can abort (u202 / post-condition) after the first join
+    /// already landed — treat the seat as proof, not this specific txid.
     pub async fn assert_joined(
         &self,
         path: &str,
@@ -51,6 +53,15 @@ impl<'a> VaultReader<'a> {
         expected_paid: i64,
         vault_txid: &str,
     ) -> AppResult<()> {
+        if self.has_joined(path, player).await? {
+            let paid = self.get_paid(path, player).await?.unwrap_or(-1);
+            if paid == expected_paid {
+                return Ok(());
+            }
+            return Err(AppError::BadRequest(format!(
+                "vault paid amount mismatch: on-chain {paid}, expected {expected_paid}"
+            )));
+        }
         self.hiro.require_tx_success(vault_txid).await?;
         if !self.has_joined(path, player).await? {
             return Err(AppError::BadRequest(
