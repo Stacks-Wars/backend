@@ -2,7 +2,7 @@ use axum::extract::{Path, State};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use serde::Deserialize;
-use sw_domain::{LobbyId, SeasonId, UserId};
+use sw_domain::{ChainId, LobbyId, SeasonId, UserId};
 use uuid::Uuid;
 
 use crate::auth::{AuthUser, InternalSecret};
@@ -151,20 +151,28 @@ async fn expire_seat(
             .ok_or_else(|| {
                 AppError::BadRequest("vaultTxid required for vault lobby seat".into())
             })?;
-        let hiro = HiroClient::new(
-            state.config.hiro_api_url.clone(),
-            state.config.hiro_api_key.clone(),
-            &state.config.usdcx_contract,
-            USDCX_ASSET_NAME,
-            Some(state.config.sw_vault_contract.clone()),
-        );
-        let reader = VaultReader::new(&hiro, &state.config.sw_vault_contract);
-        reader
-            .assert_not_joined(&lobby.path, body.address.trim(), txid)
-            .await?;
-        let _ = WalletChainService::new(state.db.clone(), state.redis.clone(), hiro)
-            .refresh_balance(user_id)
-            .await;
+        match lobby.chain {
+            ChainId::Solana => {
+                crate::services::solana_vault::assert_tx_ok(&state, txid).await?;
+                let _ = crate::services::solana_chain::get_balance(&state, user_id).await;
+            }
+            ChainId::Stacks => {
+                let hiro = HiroClient::new(
+                    state.config.hiro_api_url.clone(),
+                    state.config.hiro_api_key.clone(),
+                    &state.config.usdcx_contract,
+                    USDCX_ASSET_NAME,
+                    Some(state.config.sw_vault_contract.clone()),
+                );
+                let reader = VaultReader::new(&hiro, &state.config.sw_vault_contract);
+                reader
+                    .assert_not_joined(&lobby.path, body.address.trim(), txid)
+                    .await?;
+                let _ = WalletChainService::new(state.db.clone(), state.redis.clone(), hiro)
+                    .refresh_balance(user_id)
+                    .await;
+            }
+        }
     }
 
     lobbies.remove_participant(lobby_id, user_id, paid).await?;
