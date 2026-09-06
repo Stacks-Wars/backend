@@ -24,14 +24,14 @@ Token calls use the literal principal
 
 ## Deploy
 
-1. Derive compressed pubkey from `STACKS_WARS_KEY` (account 0) and bake it as `TRUSTED-PUBLIC-KEY`.
+1. Derive compressed pubkey from `STACKS_KEY` (account 0) and bake it as `TRUSTED-PUBLIC-KEY`.
 2. Deploy from `SP299MBHT7FPPP2SKEY73V4DHW67467SED87A4HH4` as **Clarity 4**
    (same principal as on-chain `PLATFORM-WALLET` for the 2% claim fee).
 3. Set env on backend + frontend:
 
 ```
-SW_VAULT_CONTRACT=SP299MBHT7FPPP2SKEY73V4DHW67467SED87A4HH4.sw-vault-v1
-STACKS_WARS_KEY=<24-word mnemonic>
+STACKS_VAULT=SP299MBHT7FPPP2SKEY73V4DHW67467SED87A4HH4.sw-vault-v1
+STACKS_KEY=<24-word mnemonic>
 USDCX_ASSET_NAME=usdcx-token
 HIRO_API_KEY=<hiro api key>
 ```

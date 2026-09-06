@@ -47,16 +47,25 @@ pub async fn get_balance(state: &AppState, user_id: UserId) -> AppResult<WalletB
         .await?
         .ok_or(AppError::NotFound("custodial wallet not found"))?;
 
-    let available_micro = fetch_usdc_amount(
+    let available_micro = match fetch_usdc_amount(
         &state.config.solana_rpc_url,
         &state.config.solana_usdc_mint,
         &wallet.address,
     )
     .await
-    .map_err(|err| {
-        tracing::error!(error = %err, "solana USDC balance read failed");
-        AppError::BadRequest(format!("unable to query wallet balance ({err})"))
-    })?;
+    {
+        Ok(amount) => amount,
+        Err(err) if mint_missing(&err) => {
+            tracing::warn!(error = %err, "solana USDC mint not on-chain; treating balance as 0");
+            0
+        }
+        Err(err) => {
+            tracing::error!(error = %err, "solana USDC balance read failed");
+            return Err(AppError::BadRequest(format!(
+                "unable to query wallet balance ({err})"
+            )));
+        }
+    };
 
     Ok(WalletBalance {
         user_id,
@@ -170,6 +179,13 @@ async fn rpc_envelope<T: DeserializeOwned>(
         .json()
         .await
         .map_err(|e| e.to_string())
+}
+
+fn mint_missing(err: &str) -> bool {
+    let lower = err.to_ascii_lowercase();
+    lower.contains("could not find mint")
+        || lower.contains("invalid mint")
+        || lower.contains("invalid param")
 }
 
 /// SPL amount for `mint`. Missing ATA is 0, not an RPC failure.
@@ -770,6 +786,14 @@ mod tests {
             },
             "transaction": { "message": { "instructions": [] } }
         })
+    }
+
+    #[test]
+    fn missing_mint_is_treated_as_zero_balance() {
+        assert!(mint_missing(
+            "getTokenAccountsByOwner: Error getting token program id and mint: Invalid param: could not find mint (-32602)"
+        ));
+        assert!(!mint_missing("Unauthorized (-32401)"));
     }
 
     #[test]

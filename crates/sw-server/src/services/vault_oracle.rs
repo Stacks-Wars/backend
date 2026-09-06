@@ -1,7 +1,7 @@
-//! STACKS_WARS_KEY oracle helpers — fee split preview + single claim intent.
+//! STACKS_KEY oracle helpers — fee split preview + single claim intent.
 //!
 //! Clarity message signing and sponsored fee payment live in the Next.js app
-//! (`frontend/lib/vault/`) using the same `STACKS_WARS_KEY` mnemonic. This
+//! (`frontend/lib/vault/`) using the same `STACKS_KEY` mnemonic. This
 //! module is the shared settle math used by `ServerGameHost`.
 
 use sw_domain::UserId;

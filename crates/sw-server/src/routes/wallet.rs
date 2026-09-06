@@ -8,7 +8,7 @@ use sw_domain::{ChainActivityItem, ChainId, UserId, WalletBalance};
 use uuid::Uuid;
 
 use crate::auth::{AuthUser, InternalSecret};
-use crate::config::{MAX_WITHDRAW_MICRO, MIN_WITHDRAW_MICRO, USDCX_ASSET_NAME, USDCX_CONTRACT};
+use crate::config::{MAX_WITHDRAW_MICRO, MIN_WITHDRAW_MICRO, USDCX_ASSET_NAME};
 use crate::data::users::{CustodialWalletInput, PgUserRepo, kms_key_uses_aad};
 use crate::error::{AppError, AppResult};
 use crate::services::hiro::HiroClient;
@@ -63,7 +63,7 @@ fn wallet_chain(state: &AppState) -> WalletChainService {
     let hiro = HiroClient::new(
         state.config.hiro_api_url.clone(),
         state.config.hiro_api_key.clone(),
-        USDCX_CONTRACT,
+        &state.config.usdcx_contract,
         USDCX_ASSET_NAME,
         Some(state.config.sw_vault_contract.clone()),
     );
@@ -211,7 +211,7 @@ async fn prepare_withdrawal(
             amount_micro: body.amount_micro,
             from_address: custodial.address,
             to_address,
-            usdcx_contract: USDCX_CONTRACT.to_owned(),
+            usdcx_contract: state.config.usdcx_contract.clone(),
             usdcx_asset_name: USDCX_ASSET_NAME.to_owned(),
         }));
     }
@@ -232,7 +232,7 @@ async fn prepare_withdrawal(
         amount_micro: body.amount_micro,
         from_address: custodial.address,
         to_address,
-        usdcx_contract: USDCX_CONTRACT.to_owned(),
+        usdcx_contract: state.config.usdcx_contract.clone(),
         usdcx_asset_name: USDCX_ASSET_NAME.to_owned(),
     }))
 }
@@ -333,7 +333,7 @@ async fn get_signing_material(
         chain: secret.chain,
         encrypted_signing_material: secret.encrypted_signing_material,
         kms_key_version: secret.kms_key_version,
-        usdcx_contract: USDCX_CONTRACT.to_owned(),
+        usdcx_contract: state.config.usdcx_contract.clone(),
     }))
 }
 

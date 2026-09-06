@@ -37,12 +37,12 @@ impl TelegramNotifier {
             (Some(token), Some(chat_id)) => Arc::new(Self {
                 client: Some(TelegramClient::new(token.clone())),
                 chat_id,
-                frontend_url: config.frontend_url.clone(),
+                frontend_url: config.app_url.clone(),
             }),
             _ => Arc::new(Self {
                 client: None,
                 chat_id: 0,
-                frontend_url: config.frontend_url.clone(),
+                frontend_url: config.app_url.clone(),
             }),
         }
     }

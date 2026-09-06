@@ -1,14 +1,29 @@
-# Local stack: Redis + sw-server (same pattern as chill-flow).
-# Redis is independent — start it alone with: docker compose up redis -d
+# Local infra: Postgres + Redis. Day-to-day is `cargo run` + `bun run dev`.
+# Host ports 5433 / 6380 avoid system postgres and redis on 5432 / 6379.
 #
-#   docker compose up --build
-#   docker compose up redis -d   # Redis only
+#   docker compose up -d postgres redis
+#   docker compose --profile server up --build   # optional full image
 services:
+    postgres:
+        image: postgres:18
+        environment:
+            POSTGRES_DB: stacks_wars
+            POSTGRES_USER: postgres
+            POSTGRES_PASSWORD: postgres
+        ports:
+            - "5433:5432"
+        volumes:
+            - postgres_data:/var/lib/postgresql
+        healthcheck:
+            test: ["CMD-SHELL", "pg_isready -U postgres -d stacks_wars"]
+            interval: 5s
+            timeout: 3s
+            retries: 10
     redis:
         image: redis:7-alpine
         command: redis-server --appendonly yes
         ports:
-            - "6379:6379"
+            - "6380:6379"
         volumes:
             - redis_data:/data
         healthcheck:
@@ -17,20 +32,25 @@ services:
             timeout: 3s
             retries: 10
     sw-server:
+        profiles: ["server"]
         build: .
+        command: ["/app/sw-server"]
         ports:
             - "8080:8080"
         env_file:
             - .env
         environment:
-            # Compose network hostname — overrides localhost from .env
+            DATABASE_URL: postgres://postgres:postgres@postgres:5432/stacks_wars
             REDIS_URL: redis://redis:6379
             HOST: 0.0.0.0
             PORT: "8080"
             MIGRATIONS_DIR: /app/migrations
         depends_on:
+            postgres:
+                condition: service_healthy
             redis:
                 condition: service_healthy
         restart: unless-stopped
 volumes:
+    postgres_data:
     redis_data:

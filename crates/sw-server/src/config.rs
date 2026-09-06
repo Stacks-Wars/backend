@@ -6,101 +6,95 @@ use sw_domain::ChainId;
 
 use crate::services::jwt::{JwtConfig, JwtVerifier};
 
-/// Withdraw floor ($1 USDCx).
 pub const MIN_WITHDRAW_MICRO: i64 = 1_000_000;
-/// Withdraw ceiling ($10k USDCx).
 pub const MAX_WITHDRAW_MICRO: i64 = 10_000_000_000;
-/// Paid lobby entry floor ($1). Free (`0`) still allowed.
 pub const MIN_ENTRY_MICRO: i64 = 1_000_000;
-/// Redis TTL for UI balance reads (validation always busts/refreshes).
 pub const BALANCE_CACHE_SECS: u64 = 300;
-/// Mainnet USDCx contract id.
-pub const USDCX_CONTRACT: &str = "SP120SBRBQJ00MCWS7TM5R8WJNTTKD5K0HFRC2CNE.usdcx";
-/// SIP-010 FT name inside the USDCx contract.
 pub const USDCX_ASSET_NAME: &str = "usdcx-token";
+pub const VAPID_SUBJECT: &str = "mailto:contact@mail.stackswars.com";
+
+pub const USDCX_CONTRACT: &str = "SP120SBRBQJ00MCWS7TM5R8WJNTTKD5K0HFRC2CNE.usdcx";
+pub const DEV_USDCX_CONTRACT: &str = "ST1S3D9BTK41ST9GRT225BQFFSYT6VMX7G7MNZ5FB.usdcx-dev";
+pub const DEV_VAULT_CONTRACT: &str = "ST1S3D9BTK41ST9GRT225BQFFSYT6VMX7G7MNZ5FB.sw-vault-v1";
+pub const MAIN_VAULT_CONTRACT: &str =
+    "SP299MBHT7FPPP2SKEY73V4DHW67467SED87A4HH4.sw-vault-v0-0-1";
+
+const LOCAL_INTERNAL_API_SECRET: &str = "sw-dev-internal";
+const LOCAL_DATABASE_URL: &str = "postgres://postgres:postgres@127.0.0.1:5433/stacks_wars";
+const LOCAL_REDIS_URL: &str = "redis://127.0.0.1:6380";
+const LOCAL_APP_URL: &str = "http://localhost:3000";
+const DEV_HIRO_API_URL: &str = "https://api.testnet.hiro.so";
+const MAIN_HIRO_API_URL: &str = "https://api.hiro.so";
+const DEV_SOLANA_RPC_URL: &str = "https://api.devnet.solana.com";
+const MAIN_SOLANA_USDC_MINT: &str = "2ztYALhLWs2Lg1bGRBje82RgiLhuH4ZbCimRWVeyxUaB";
+const MAIN_SOLANA_VAULT_PROGRAM_ID: &str = "8NZHj9VH9JkqiAg19CK43ZLuK5hn5jXPBnLfbeKonqfy";
+const MAIN_SOLANA_PLATFORM_WALLET: &str = "931LzmTuFs3k8k73mnKaZoUUYbVZu6ZNAADGVTaupiAN";
 
 #[derive(Debug, Clone)]
 pub struct Config {
+    pub is_dev: bool,
     pub host: IpAddr,
     pub port: u16,
     pub database_url: String,
     pub redis_url: String,
     pub hiro_api_url: String,
     pub hiro_api_key: String,
-    pub stacks_network: String,
     pub sw_vault_contract: String,
-    pub better_auth_url: String,
+    pub usdcx_contract: String,
+    pub app_url: String,
     pub jwt: JwtConfig,
     pub admin_emails: Vec<String>,
     pub internal_api_secret: String,
-    /// Public web app origin for deep links (`https://stackswars.com`).
-    pub frontend_url: String,
-    /// Telegram bot token. Empty → Telegram disabled.
     pub telegram_bot_token: Option<String>,
-    /// Target chat/channel id for lobby broadcasts. Required when bot token is set.
     pub telegram_chat_id: Option<i64>,
     pub vapid_public_key: Option<String>,
     pub vapid_private_key: Option<String>,
-    pub vapid_subject: String,
     pub solana_rpc_url: String,
     pub solana_usdc_mint: String,
     pub solana_vault_program_id: String,
-    /// Wars key pubkey. Used as Solana game-fee fallback when the plugin dev
-    /// has no Solana custodial wallet. Empty → Stacks principal (frontend remaps).
     pub solana_platform_wallet: String,
 }
 
 impl Config {
     pub fn from_env() -> Result<Self> {
-        let host = std::env::var("HOST")
-            .unwrap_or_else(|_| "0.0.0.0".to_owned())
+        let is_dev = !is_main();
+
+        let host = optional("HOST")
+            .unwrap_or_else(|| "0.0.0.0".to_owned())
             .parse::<IpAddr>()
             .context("parse HOST")?;
-
-        let port = std::env::var("PORT")
-            .unwrap_or_else(|_| "8080".to_owned())
+        let port = optional("PORT")
+            .unwrap_or_else(|| "8080".to_owned())
             .parse::<u16>()
             .context("parse PORT")?;
 
-        let database_url = required_env("DATABASE_URL")?;
-        let redis_url = required_env("REDIS_URL")?;
+        let database_url = setting("DATABASE_URL", LOCAL_DATABASE_URL)?;
+        let redis_url = setting("REDIS_URL", LOCAL_REDIS_URL)?;
+        let hiro_api_url = if is_dev {
+            DEV_HIRO_API_URL.to_owned()
+        } else {
+            MAIN_HIRO_API_URL.to_owned()
+        };
+        let hiro_api_key = setting("HIRO_API_KEY", "")?;
+        let sw_vault_contract = if is_dev {
+            DEV_VAULT_CONTRACT.to_owned()
+        } else {
+            MAIN_VAULT_CONTRACT.to_owned()
+        };
+        let usdcx_contract = if is_dev {
+            DEV_USDCX_CONTRACT.to_owned()
+        } else {
+            USDCX_CONTRACT.to_owned()
+        };
 
-        let hiro_api_url =
-            std::env::var("HIRO_API_URL").unwrap_or_else(|_| "https://api.hiro.so".to_owned());
-        let hiro_api_key = required_env("HIRO_API_KEY")?;
-        let stacks_network =
-            std::env::var("STACKS_NETWORK").unwrap_or_else(|_| "mainnet".to_owned());
-        let sw_vault_contract = required_env("SW_VAULT_CONTRACT")?;
-        if !sw_vault_contract.contains('.') {
-            return Err(anyhow!("SW_VAULT_CONTRACT must be deployer.contract-name"));
-        }
+        let app_url = setting("APP_URL", LOCAL_APP_URL)?
+            .trim_end_matches('/')
+            .to_owned();
+        let jwt = JwtConfig::from_app_url(&app_url).map_err(|e| anyhow!(e.to_string()))?;
 
-        let better_auth_url = required_env("BETTER_AUTH_URL")?;
-        let jwt = JwtConfig::from_better_auth_url(&better_auth_url)
-            .map_err(|e| anyhow!(e.to_string()))?;
-
-        let admin_emails = parse_admin_emails(std::env::var("ADMIN").ok().as_deref());
-        let internal_api_secret = required_env("INTERNAL_API_SECRET")?;
-
-        let frontend_url = std::env::var("FRONTEND_URL")
-            .ok()
-            .map(|s| s.trim().trim_end_matches('/').to_owned())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "https://stackswars.com".to_owned());
-
-        let telegram_bot_token = std::env::var("TELEGRAM_BOT_TOKEN")
-            .ok()
-            .map(|s| s.trim().trim_matches('"').to_owned())
-            .filter(|s| !s.is_empty());
-        let telegram_chat_id = match std::env::var("TELEGRAM_CHAT_ID")
-            .ok()
-            .map(|s| s.trim().trim_matches('"').to_owned())
-            .filter(|s| !s.is_empty())
-        {
-            Some(raw) => Some(
-                raw.parse::<i64>()
-                    .context("parse TELEGRAM_CHAT_ID as i64")?,
-            ),
+        let telegram_bot_token = optional("TELEGRAM_BOT_TOKEN");
+        let telegram_chat_id = match optional("TELEGRAM_CHAT_ID") {
+            Some(raw) => Some(raw.parse::<i64>().context("parse TELEGRAM_CHAT_ID as i64")?),
             None => None,
         };
         if telegram_bot_token.is_some() ^ telegram_chat_id.is_some() {
@@ -109,68 +103,35 @@ impl Config {
             ));
         }
 
-        let vapid_public_key = std::env::var("VAPID_PUBLIC_KEY")
-            .ok()
-            .map(|s| s.trim().to_owned())
-            .filter(|s| !s.is_empty());
-        let vapid_private_key = std::env::var("VAPID_PRIVATE_KEY")
-            .ok()
-            .map(|s| s.trim().to_owned())
-            .filter(|s| !s.is_empty());
-        let vapid_subject = std::env::var("VAPID_SUBJECT")
-            .ok()
-            .map(|s| s.trim().to_owned())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "mailto:contact@mail.stackswars.com".to_owned());
-        let vapid_subject =
-            if vapid_subject.starts_with("mailto:") || vapid_subject.starts_with("https://") {
-                vapid_subject
-            } else if vapid_subject.contains('@') {
-                format!("mailto:{vapid_subject}")
-            } else {
-                vapid_subject
-            };
-
-        let solana_rpc_url = solana_rpc_url(
-            &std::env::var("SOLANA_NETWORK").unwrap_or_else(|_| "devnet".to_owned()),
-            std::env::var("SOLANA_RPC_URL").ok().as_deref(),
-            &required_env("HELIUS_API_KEY")?,
-        )?;
-        let solana_usdc_mint = std::env::var("SOLANA_USDC_MINT").unwrap_or_else(|_| {
-            // Platform test USDC on devnet. Override for mainnet Circle.
-            "2ztYALhLWs2Lg1bGRBje82RgiLhuH4ZbCimRWVeyxUaB".to_owned()
-        });
-        let solana_vault_program_id = std::env::var("SOLANA_VAULT_PROGRAM_ID")
-            .unwrap_or_else(|_| "8NZHj9VH9JkqiAg19CK43ZLuK5hn5jXPBnLfbeKonqfy".to_owned());
-        let solana_platform_wallet = std::env::var("SOLANA_PLATFORM_WALLET")
-            .ok()
-            .map(|s| s.trim().to_owned())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_default();
+        let helius_key = setting("HELIUS_API_KEY", "")?;
+        let solana_rpc_url = solana_rpc_url(&helius_key, is_dev)?;
 
         Ok(Self {
+            is_dev,
             host,
             port,
             database_url,
             redis_url,
             hiro_api_url,
             hiro_api_key,
-            stacks_network,
             sw_vault_contract,
-            better_auth_url,
+            usdcx_contract,
+            app_url,
             jwt,
-            admin_emails,
-            internal_api_secret,
-            frontend_url,
+            admin_emails: parse_admin_emails(optional("ADMIN").as_deref()),
+            internal_api_secret: if is_dev {
+                LOCAL_INTERNAL_API_SECRET.to_owned()
+            } else {
+                setting("INTERNAL_API_SECRET", LOCAL_INTERNAL_API_SECRET)?
+            },
             telegram_bot_token,
             telegram_chat_id,
-            vapid_public_key,
-            vapid_private_key,
-            vapid_subject,
+            vapid_public_key: optional("VAPID_PUBLIC_KEY"),
+            vapid_private_key: optional("VAPID_PRIVATE_KEY"),
             solana_rpc_url,
-            solana_usdc_mint,
-            solana_vault_program_id,
-            solana_platform_wallet,
+            solana_usdc_mint: MAIN_SOLANA_USDC_MINT.to_owned(),
+            solana_vault_program_id: MAIN_SOLANA_VAULT_PROGRAM_ID.to_owned(),
+            solana_platform_wallet: MAIN_SOLANA_PLATFORM_WALLET.to_owned(),
         })
     }
 
@@ -178,7 +139,14 @@ impl Config {
         JwtVerifier::arc(self.jwt.clone())
     }
 
-    /// Vault deployer principal — matches Clarity `PLATFORM-WALLET`.
+    pub fn stacks_network(&self) -> &'static str {
+        if self.is_dev {
+            "testnet"
+        } else {
+            "mainnet"
+        }
+    }
+
     pub fn platform_wallet(&self) -> &str {
         self.sw_vault_contract
             .split_once('.')
@@ -186,45 +154,33 @@ impl Config {
             .unwrap_or(self.sw_vault_contract.as_str())
     }
 
-    /// Game-fee fallback when the plugin `dev_id` has no wallet on this chain.
     pub fn fallback_dev_wallet(&self, chain: ChainId) -> String {
         match chain {
             ChainId::Solana if !self.solana_platform_wallet.is_empty() => {
                 self.solana_platform_wallet.clone()
             }
-            _ => self.platform_wallet().to_owned(),
+            ChainId::Solana | ChainId::Stacks => self.platform_wallet().to_owned(),
         }
     }
 }
 
-/// `SOLANA_RPC_URL` is a `{network}` template. `HELIUS_API_KEY` is the secret.
-/// Leftover public `api.*.solana.com` URLs fall back to Helius.
-fn solana_rpc_url(network: &str, template: Option<&str>, key: &str) -> Result<String> {
+fn is_main() -> bool {
+    std::env::args().any(|a| a == "--main")
+        || std::env::var("NETWORK")
+            .ok()
+            .is_some_and(|v| v.trim().eq_ignore_ascii_case("main"))
+}
+
+fn solana_rpc_url(key: &str, is_dev: bool) -> Result<String> {
     let key = key.trim();
-    if key.is_empty() {
-        return Err(anyhow!("HELIUS_API_KEY must be set"));
+    if !key.is_empty() {
+        // Solana stays on Devnet in local and production.
+        return Ok(format!("https://devnet.helius-rpc.com/?api-key={key}"));
     }
-    let cluster = match network.trim().to_lowercase().as_str() {
-        "mainnet" | "mainnet-beta" => "mainnet",
-        _ => "devnet",
-    };
-    let raw = template.map(str::trim).unwrap_or("");
-    let template = if raw.is_empty()
-        || raw.contains("api.devnet.solana.com")
-        || raw.contains("api.mainnet-beta.solana.com")
-        || raw.contains("api.testnet.solana.com")
-    {
-        "https://{network}.helius-rpc.com/"
-    } else {
-        raw
-    };
-    let host = template.replace("{network}", cluster);
-    let host = host
-        .split('?')
-        .next()
-        .unwrap_or(&host)
-        .trim_end_matches('/');
-    Ok(format!("{host}/?api-key={key}"))
+    if is_dev {
+        return Ok(DEV_SOLANA_RPC_URL.to_owned());
+    }
+    Err(anyhow!("HELIUS_API_KEY must be set"))
 }
 
 fn parse_admin_emails(raw: Option<&str>) -> Vec<String> {
@@ -244,15 +200,21 @@ fn parse_admin_emails(raw: Option<&str>) -> Vec<String> {
     emails
 }
 
-fn required_env(key: &str) -> Result<String> {
-    let value = std::env::var(key)
-        .with_context(|| format!("{key} must be set"))?
-        .trim()
-        .to_owned();
-    if value.is_empty() {
-        return Err(anyhow!("{key} must not be empty"));
+fn optional(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .map(|s| s.trim().trim_matches('"').to_owned())
+        .filter(|s| !s.is_empty())
+}
+
+fn setting(key: &str, local: &str) -> Result<String> {
+    if let Some(value) = optional(key) {
+        return Ok(value);
     }
-    Ok(value)
+    if !is_main() {
+        return Ok(local.to_owned());
+    }
+    Err(anyhow!("{key} must be set"))
 }
 
 #[cfg(test)]
@@ -260,19 +222,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn interpolates_devnet_template() {
-        let url = solana_rpc_url(
-            "devnet",
-            Some("https://{network}.helius-rpc.com/"),
-            "abc",
-        )
-        .unwrap();
+    fn helius_on_main() {
+        let url = solana_rpc_url("abc", false).unwrap();
         assert_eq!(url, "https://devnet.helius-rpc.com/?api-key=abc");
     }
 
     #[test]
-    fn missing_api_key_fails() {
-        let err = solana_rpc_url("devnet", None, "  ").unwrap_err();
+    fn helius_in_dev() {
+        let url = solana_rpc_url("abc", true).unwrap();
+        assert_eq!(url, "https://devnet.helius-rpc.com/?api-key=abc");
+    }
+
+    #[test]
+    fn missing_key_fails_on_main() {
+        let err = solana_rpc_url("  ", false).unwrap_err();
         assert!(err.to_string().contains("HELIUS_API_KEY"));
+    }
+
+    #[test]
+    fn missing_key_uses_public_rpc_in_dev() {
+        let url = solana_rpc_url("", true).unwrap();
+        assert_eq!(url, DEV_SOLANA_RPC_URL);
     }
 }

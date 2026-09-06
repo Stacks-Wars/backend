@@ -1,0 +1,27 @@
+id: 0
+name: Testnet deployment
+network: testnet
+stacks-node: https://api.testnet.hiro.so
+bitcoin-node: http://blockstack:blockstacksystem@bitcoind.testnet.stacks.co:18332
+plan:
+  batches:
+  - id: 0
+    transactions:
+    - transaction-type: contract-publish
+      contract-name: usdcx-dev
+      expected-sender: ST1S3D9BTK41ST9GRT225BQFFSYT6VMX7G7MNZ5FB
+      cost: 117481
+      path: deployments/usdcx-dev.testnet.clar
+      anchor-block-only: true
+      clarity-version: 3
+    epoch: '3.2'
+  - id: 1
+    transactions:
+    - transaction-type: contract-publish
+      contract-name: sw-vault-v1
+      expected-sender: ST1S3D9BTK41ST9GRT225BQFFSYT6VMX7G7MNZ5FB
+      cost: 119816
+      path: deployments/sw-vault-v1.testnet.clar
+      anchor-block-only: true
+      clarity-version: 4
+    epoch: '3.3'
