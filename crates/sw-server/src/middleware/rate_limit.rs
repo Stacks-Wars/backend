@@ -397,6 +397,10 @@ mod tests {
             solana_usdc_mint: "2ztYALhLWs2Lg1bGRBje82RgiLhuH4ZbCimRWVeyxUaB".into(),
             solana_vault_program_id: "8NZHj9VH9JkqiAg19CK43ZLuK5hn5jXPBnLfbeKonqfy".into(),
             solana_platform_wallet: String::new(),
+            arbitrum_rpc_url: "https://sepolia-rollup.arbitrum.io/rpc".into(),
+            arbitrum_usdc: String::new(),
+            arbitrum_vault: String::new(),
+            arbitrum_platform_wallet: String::new(),
         };
         AppState::new(config, db, redis, Arc::new(GameRegistry::new()))
     }

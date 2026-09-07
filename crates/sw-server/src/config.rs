@@ -29,6 +29,14 @@ const DEV_SOLANA_RPC_URL: &str = "https://api.devnet.solana.com";
 const MAIN_SOLANA_USDC_MINT: &str = "2ztYALhLWs2Lg1bGRBje82RgiLhuH4ZbCimRWVeyxUaB";
 const MAIN_SOLANA_VAULT_PROGRAM_ID: &str = "8NZHj9VH9JkqiAg19CK43ZLuK5hn5jXPBnLfbeKonqfy";
 const MAIN_SOLANA_PLATFORM_WALLET: &str = "931LzmTuFs3k8k73mnKaZoUUYbVZu6ZNAADGVTaupiAN";
+const ARBITRUM_SEPOLIA_RPC: &str = "https://sepolia-rollup.arbitrum.io/rpc";
+const ARBITRUM_ONE_RPC: &str = "https://arb1.arbitrum.io/rpc";
+const DEV_ARBITRUM_PLATFORM: &str = "0x2092cD008184Dd0E01C90Aa14b132B468a69745E";
+const DEV_ARBITRUM_USDC: &str = "0x554fF14eaA5380a99e765a7748D6eb5A6B1AF8c7";
+const DEV_ARBITRUM_VAULT: &str = "0xc704D03f4B09bc21d7cdb36C5FFF9ccB862d612F";
+const MAIN_ARBITRUM_USDC: &str = "0xaf88d065e77c8cC2239327C5EDb3A432268e5831";
+const MAIN_ARBITRUM_VAULT: &str = "0x0B4379B27050048D868376aDBA6a03826bDd6e90";
+const MAIN_ARBITRUM_PLATFORM: &str = "0xD456920A03D7F01864DafA4AB3709ACc999033Aa";
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -53,6 +61,10 @@ pub struct Config {
     pub solana_usdc_mint: String,
     pub solana_vault_program_id: String,
     pub solana_platform_wallet: String,
+    pub arbitrum_rpc_url: String,
+    pub arbitrum_usdc: String,
+    pub arbitrum_vault: String,
+    pub arbitrum_platform_wallet: String,
 }
 
 impl Config {
@@ -132,6 +144,34 @@ impl Config {
             solana_usdc_mint: MAIN_SOLANA_USDC_MINT.to_owned(),
             solana_vault_program_id: MAIN_SOLANA_VAULT_PROGRAM_ID.to_owned(),
             solana_platform_wallet: MAIN_SOLANA_PLATFORM_WALLET.to_owned(),
+            arbitrum_rpc_url: optional("ARBITRUM_RPC_URL").unwrap_or_else(|| {
+                if is_dev {
+                    ARBITRUM_SEPOLIA_RPC.to_owned()
+                } else {
+                    ARBITRUM_ONE_RPC.to_owned()
+                }
+            }),
+            arbitrum_usdc: optional("ARBITRUM_USDC").unwrap_or_else(|| {
+                if is_dev {
+                    DEV_ARBITRUM_USDC.to_owned()
+                } else {
+                    MAIN_ARBITRUM_USDC.to_owned()
+                }
+            }),
+            arbitrum_vault: optional("ARBITRUM_VAULT").unwrap_or_else(|| {
+                if is_dev {
+                    DEV_ARBITRUM_VAULT.to_owned()
+                } else {
+                    MAIN_ARBITRUM_VAULT.to_owned()
+                }
+            }),
+            arbitrum_platform_wallet: optional("ARBITRUM_PLATFORM").unwrap_or_else(|| {
+                if is_dev {
+                    DEV_ARBITRUM_PLATFORM.to_owned()
+                } else {
+                    MAIN_ARBITRUM_PLATFORM.to_owned()
+                }
+            }),
         })
     }
 
@@ -159,7 +199,12 @@ impl Config {
             ChainId::Solana if !self.solana_platform_wallet.is_empty() => {
                 self.solana_platform_wallet.clone()
             }
-            ChainId::Solana | ChainId::Stacks => self.platform_wallet().to_owned(),
+            ChainId::Arbitrum if !self.arbitrum_platform_wallet.is_empty() => {
+                self.arbitrum_platform_wallet.clone()
+            }
+            ChainId::Solana | ChainId::Stacks | ChainId::Arbitrum => {
+                self.platform_wallet().to_owned()
+            }
         }
     }
 }

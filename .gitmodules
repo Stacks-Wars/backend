@@ -1,0 +1,3 @@
+[submodule "sw-vault/arbitrum/lib/forge-std"]
+	path = sw-vault/arbitrum/lib/forge-std
+	url = https://github.com/foundry-rs/forge-std

@@ -12,7 +12,7 @@ use crate::config::{MAX_WITHDRAW_MICRO, MIN_WITHDRAW_MICRO, USDCX_ASSET_NAME};
 use crate::data::users::{CustodialWalletInput, PgUserRepo, kms_key_uses_aad};
 use crate::error::{AppError, AppResult};
 use crate::services::hiro::HiroClient;
-use crate::services::solana_chain;
+use crate::services::{arbitrum_chain, arbitrum_vault, solana_chain};
 use crate::services::wallet_chain::WalletChainService;
 use crate::state::AppState;
 
@@ -21,10 +21,44 @@ struct ChainQuery {
     chain: Option<String>,
 }
 
-fn chain_param(query: &ChainQuery) -> String {
+fn parsed_chain(query: &ChainQuery) -> ChainId {
     ChainId::from_optional(query.chain.as_deref())
-        .as_str()
-        .to_owned()
+}
+
+fn chain_param(query: &ChainQuery) -> String {
+    parsed_chain(query).as_str().to_owned()
+}
+
+async fn live_balance(
+    state: &AppState,
+    user_id: UserId,
+    chain: ChainId,
+    refresh: bool,
+) -> AppResult<WalletBalance> {
+    match chain {
+        ChainId::Solana => solana_chain::get_balance(state, user_id).await,
+        ChainId::Arbitrum => arbitrum_chain::get_balance(state, user_id).await,
+        ChainId::Stacks => {
+            let svc = wallet_chain(state);
+            if refresh {
+                svc.refresh_balance(user_id).await
+            } else {
+                svc.get_balance(user_id).await
+            }
+        }
+    }
+}
+
+async fn live_activity(
+    state: &AppState,
+    user_id: UserId,
+    chain: ChainId,
+) -> AppResult<Vec<ChainActivityItem>> {
+    match chain {
+        ChainId::Solana => solana_chain::list_activity(state, user_id, 50).await,
+        ChainId::Arbitrum => arbitrum_chain::list_activity(state, user_id, 50).await,
+        ChainId::Stacks => wallet_chain(state).activity(user_id, 50).await,
+    }
 }
 
 /// Withdraw prepare/complete — Sensitive rate tier.
@@ -32,6 +66,7 @@ pub fn sensitive_router() -> Router<AppState> {
     Router::new()
         .route("/withdrawals/prepare", post(prepare_withdrawal))
         .route("/withdrawals/complete", post(complete_withdrawal))
+        .route("/withdrawals/abort", post(abort_withdrawal))
 }
 
 /// Remaining wallet mutations — Write rate tier.
@@ -77,14 +112,8 @@ async fn get_balance(
     Query(query): Query<ChainQuery>,
 ) -> AppResult<Json<WalletBalance>> {
     auth.require_self(user_id)?;
-    let chain = chain_param(&query);
-    let bal = if chain == "solana" {
-        solana_chain::get_balance(&state, UserId::from(user_id)).await?
-    } else {
-        wallet_chain(&state)
-            .get_balance(UserId::from(user_id))
-            .await?
-    };
+    let chain = parsed_chain(&query);
+    let bal = live_balance(&state, UserId::from(user_id), chain, false).await?;
     Ok(Json(bal))
 }
 
@@ -95,14 +124,8 @@ async fn refresh_balance(
     Query(query): Query<ChainQuery>,
 ) -> AppResult<Json<WalletBalance>> {
     auth.require_self(user_id)?;
-    let chain = chain_param(&query);
-    let bal = if chain == "solana" {
-        solana_chain::get_balance(&state, UserId::from(user_id)).await?
-    } else {
-        wallet_chain(&state)
-            .refresh_balance(UserId::from(user_id))
-            .await?
-    };
+    let chain = parsed_chain(&query);
+    let bal = live_balance(&state, UserId::from(user_id), chain, true).await?;
 
     let topic = format!("user:{user_id}");
     state.subscriptions.publish(
@@ -128,14 +151,8 @@ async fn list_activity(
     Query(query): Query<ChainQuery>,
 ) -> AppResult<Json<Vec<ChainActivityItem>>> {
     auth.require_self(user_id)?;
-    let chain = chain_param(&query);
-    let items = if chain == "solana" {
-        solana_chain::list_activity(&state, UserId::from(user_id), 50).await?
-    } else {
-        wallet_chain(&state)
-            .activity(UserId::from(user_id), 50)
-            .await?
-    };
+    let chain = parsed_chain(&query);
+    let items = live_activity(&state, UserId::from(user_id), chain).await?;
     Ok(Json(items))
 }
 
@@ -196,28 +213,7 @@ async fn prepare_withdrawal(
         .await?
         .ok_or(AppError::NotFound("custodial wallet not found"))?;
 
-    if chain == ChainId::Solana {
-        let bal = solana_chain::get_balance(&state, user_id).await?;
-        if bal.available_micro < body.amount_micro {
-            return Err(AppError::InsufficientBalance {
-                required_micro: body.amount_micro,
-                available_micro: bal.available_micro,
-            });
-        }
-        let svc = wallet_chain(&state);
-        svc.acquire_withdraw_lock(user_id, 900).await?;
-        return Ok(Json(WithdrawPrepareResponse {
-            user_id: user_id.as_uuid(),
-            amount_micro: body.amount_micro,
-            from_address: custodial.address,
-            to_address,
-            usdcx_contract: state.config.usdcx_contract.clone(),
-            usdcx_asset_name: USDCX_ASSET_NAME.to_owned(),
-        }));
-    }
-
-    let svc = wallet_chain(&state);
-    let bal = svc.refresh_balance(user_id).await?;
+    let bal = live_balance(&state, user_id, chain, true).await?;
     if bal.available_micro < body.amount_micro {
         return Err(AppError::InsufficientBalance {
             required_micro: body.amount_micro,
@@ -225,7 +221,9 @@ async fn prepare_withdrawal(
         });
     }
 
-    svc.acquire_withdraw_lock(user_id, 900).await?;
+    wallet_chain(&state)
+        .acquire_withdraw_lock(user_id, 900)
+        .await?;
 
     Ok(Json(WithdrawPrepareResponse {
         user_id: user_id.as_uuid(),
@@ -258,30 +256,13 @@ async fn complete_withdrawal(
 
     let chain = ChainId::from_optional(body.chain.as_deref());
     let svc = wallet_chain(&state);
-    if chain == ChainId::Solana {
-        crate::services::solana_vault::assert_tx_ok(&state, txid).await?;
-        svc.release_withdraw_lock(user_id).await?;
-        let bal = solana_chain::get_balance(&state, user_id).await?;
-        let topic = format!("user:{}", user_id.as_uuid());
-        state.subscriptions.publish(
-            &state.sessions,
-            &topic,
-            crate::ws::ServerMessage {
-                kind: "wallet.balance.updated".into(),
-                payload: serde_json::json!({
-                    "availableMicro": bal.available_micro,
-                    "address": bal.address,
-                    "chain": chain.as_str(),
-                }),
-            },
-        );
-        return Ok(Json(bal));
+    match chain {
+        ChainId::Solana => crate::services::solana_vault::assert_tx_ok(&state, txid).await?,
+        ChainId::Arbitrum => arbitrum_vault::assert_tx_ok(&state, txid).await?,
+        ChainId::Stacks => svc.hiro().require_tx_success(txid).await?,
     }
-
-    svc.hiro().require_tx_success(txid).await?;
     svc.release_withdraw_lock(user_id).await?;
-    let bal = svc.refresh_balance(user_id).await?;
-
+    let bal = live_balance(&state, user_id, chain, true).await?;
     let topic = format!("user:{}", user_id.as_uuid());
     state.subscriptions.publish(
         &state.sessions,
@@ -291,12 +272,21 @@ async fn complete_withdrawal(
             payload: serde_json::json!({
                 "availableMicro": bal.available_micro,
                 "address": bal.address,
-                "chain": chain,
+                "chain": chain.as_str(),
             }),
         },
     );
-
     Ok(Json(bal))
+}
+
+async fn abort_withdrawal(
+    State(state): State<AppState>,
+    auth: AuthUser,
+) -> AppResult<Json<serde_json::Value>> {
+    wallet_chain(&state)
+        .release_withdraw_lock(auth.user_id)
+        .await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 #[derive(Debug, Serialize)]
