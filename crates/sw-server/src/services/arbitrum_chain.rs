@@ -318,7 +318,7 @@ fn classify_activity(
         if transfer.amount <= 0 {
             continue;
         }
-        if same_addr(&transfer.to, player) && is_zero_address(&transfer.from) {
+        if same_addr(&transfer.to, player) && !same_addr(&transfer.from, vault) {
             out.push(stamped(
                 &transfer.txid,
                 transfer.block_number,
@@ -745,6 +745,18 @@ mod tests {
             &[],
         );
         assert_eq!(kinds(&rows), vec![(ChainActivityKind::Deposit, 50_000_000)]);
+    }
+
+    #[test]
+    fn inbound_transfer_is_deposit() {
+        let rows = classify_activity(
+            PLAYER,
+            VAULT,
+            PLATFORM,
+            &[transfer("0xdep", DEST, PLAYER, 1_000_000)],
+            &[],
+        );
+        assert_eq!(kinds(&rows), vec![(ChainActivityKind::Deposit, 1_000_000)]);
     }
 
     #[test]
