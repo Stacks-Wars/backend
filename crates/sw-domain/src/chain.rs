@@ -10,15 +10,17 @@ use std::str::FromStr;
 pub enum ChainId {
     Stacks,
     Solana,
+    Arbitrum,
 }
 
 impl ChainId {
-    pub const ALL: [Self; 2] = [Self::Stacks, Self::Solana];
+    pub const ALL: [Self; 3] = [Self::Stacks, Self::Solana, Self::Arbitrum];
 
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Stacks => "stacks",
             Self::Solana => "solana",
+            Self::Arbitrum => "arbitrum",
         }
     }
 
@@ -26,6 +28,7 @@ impl ChainId {
         match self {
             Self::Stacks => "USDCx",
             Self::Solana => "USDC",
+            Self::Arbitrum => "USDC",
         }
     }
 
@@ -37,9 +40,12 @@ impl ChainId {
             .unwrap_or_default()
     }
 
-    /// Stacks principals are c32 (`SP`/`ST`, no lowercase). Solana pubkeys mix case.
+    /// `0x` EOAs first so they are not mistaken for Solana pubkeys (same length).
     pub fn infer_from_address(address: &str) -> Option<Self> {
         let a = address.trim();
+        if looks_like_evm_address(a) {
+            return Some(Self::Arbitrum);
+        }
         if looks_like_stacks_address(a) {
             return Some(Self::Stacks);
         }
@@ -52,6 +58,14 @@ impl ChainId {
     pub fn matches_address(self, address: &str) -> bool {
         Self::infer_from_address(address) == Some(self)
     }
+}
+
+fn looks_like_evm_address(address: &str) -> bool {
+    let rest = address.strip_prefix("0x").or_else(|| address.strip_prefix("0X"));
+    let Some(rest) = rest else {
+        return false;
+    };
+    rest.len() == 40 && rest.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 fn looks_like_stacks_address(address: &str) -> bool {
@@ -82,7 +96,28 @@ impl FromStr for ChainId {
         match s.trim().to_ascii_lowercase().as_str() {
             "stacks" | "stx" => Ok(Self::Stacks),
             "solana" | "sol" => Ok(Self::Solana),
+            "arbitrum" | "arb" => Ok(Self::Arbitrum),
             other => Err(format!("unknown chain: {other}")),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn evm_address_is_arbitrum_before_solana_length() {
+        let eoa = "0x2092cD008184Dd0E01C90Aa14b132B468a69745E";
+        assert_eq!(ChainId::infer_from_address(eoa), Some(ChainId::Arbitrum));
+        assert!(ChainId::Arbitrum.matches_address(eoa));
+        assert!(!ChainId::Solana.matches_address(eoa));
+    }
+
+    #[test]
+    fn parses_arb_alias() {
+        assert_eq!("arb".parse::<ChainId>().unwrap(), ChainId::Arbitrum);
+        assert_eq!(ChainId::Arbitrum.play_token_symbol(), "USDC");
+        assert_eq!(ChainId::ALL.len(), 3);
     }
 }

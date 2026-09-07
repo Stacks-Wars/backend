@@ -92,16 +92,19 @@ impl WalletChainService {
     pub async fn acquire_withdraw_lock(&self, user_id: UserId, ttl_secs: u64) -> AppResult<()> {
         let mut redis = self.redis.clone();
         let key = Self::withdraw_lock_key(user_id);
-        let ok: bool = redis
-            .set_nx(&key, "1")
-            .await
-            .map_err(|e| AppError::Internal(e.into()))?;
-        if !ok {
+        if !set_lock(&mut redis, &key, ttl_secs).await? {
+            let ttl: i64 = redis.ttl(&key).await.unwrap_or(-2);
+            // SET NX without EX can leave a lock that never dies.
+            if ttl == -1 {
+                let _: Result<(), _> = redis.del(&key).await;
+                if set_lock(&mut redis, &key, ttl_secs).await? {
+                    return Ok(());
+                }
+            }
             return Err(AppError::Conflict(
                 "a withdrawal is already in progress".into(),
             ));
         }
-        let _: Result<(), _> = redis.expire(&key, ttl_secs as i64).await;
         Ok(())
     }
 
@@ -110,4 +113,22 @@ impl WalletChainService {
         let _: Result<(), _> = redis.del(Self::withdraw_lock_key(user_id)).await;
         Ok(())
     }
+}
+
+async fn set_lock(
+    redis: &mut ConnectionManager,
+    key: &str,
+    ttl_secs: u64,
+) -> AppResult<bool> {
+    let ttl = ttl_secs.max(1);
+    let reply: Option<String> = redis::cmd("SET")
+        .arg(key)
+        .arg("1")
+        .arg("NX")
+        .arg("EX")
+        .arg(ttl)
+        .query_async(redis)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+    Ok(reply.is_some())
 }
