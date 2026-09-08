@@ -11,7 +11,7 @@ Lobby escrow. Platform is `msg.sender` for every vault call and pays gas. Player
 
 ## Keys
 
-Dest uses the committed play mnemonic in [`play/mnemonic.txt`](./play/mnemonic.txt). Main uses `ARBITRUM_KEY` (wars). Do not commit the wars mnemonic.
+Dest uses the committed play mnemonic in [`play/mnemonic.txt`](./play/mnemonic.txt) (shared with BOT Chain dest). Main uses `EVM_KEY` (wars). Do not commit the wars mnemonic.
 
 ## Deploy
 
@@ -26,7 +26,7 @@ forge script script/DeployPlay.s.sol:DeployPlay \
 # main — One vault against Circle USDC
 forge script script/DeployMain.s.sol:DeployMain \
   --rpc-url one --broadcast \
-  --mnemonics "$ARBITRUM_KEY_FILE" \
+  --mnemonics "$EVM_KEY_FILE" \
   --mnemonic-derivation-paths "m/44'/60'/0'/0/0"
 ```
 

@@ -11,16 +11,18 @@ pub enum ChainId {
     Stacks,
     Solana,
     Arbitrum,
+    Botchain,
 }
 
 impl ChainId {
-    pub const ALL: [Self; 3] = [Self::Stacks, Self::Solana, Self::Arbitrum];
+    pub const ALL: [Self; 4] = [Self::Stacks, Self::Solana, Self::Arbitrum, Self::Botchain];
 
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Stacks => "stacks",
             Self::Solana => "solana",
             Self::Arbitrum => "arbitrum",
+            Self::Botchain => "botchain",
         }
     }
 
@@ -29,6 +31,7 @@ impl ChainId {
             Self::Stacks => "USDCx",
             Self::Solana => "USDC",
             Self::Arbitrum => "USDC",
+            Self::Botchain => "USDT",
         }
     }
 
@@ -56,7 +59,10 @@ impl ChainId {
     }
 
     pub fn matches_address(self, address: &str) -> bool {
-        Self::infer_from_address(address) == Some(self)
+        match self {
+            Self::Arbitrum | Self::Botchain => looks_like_evm_address(address),
+            Self::Stacks | Self::Solana => Self::infer_from_address(address) == Some(self),
+        }
     }
 }
 
@@ -97,6 +103,7 @@ impl FromStr for ChainId {
             "stacks" | "stx" => Ok(Self::Stacks),
             "solana" | "sol" => Ok(Self::Solana),
             "arbitrum" | "arb" => Ok(Self::Arbitrum),
+            "botchain" | "bot" => Ok(Self::Botchain),
             other => Err(format!("unknown chain: {other}")),
         }
     }
@@ -111,6 +118,7 @@ mod tests {
         let eoa = "0x2092cD008184Dd0E01C90Aa14b132B468a69745E";
         assert_eq!(ChainId::infer_from_address(eoa), Some(ChainId::Arbitrum));
         assert!(ChainId::Arbitrum.matches_address(eoa));
+        assert!(ChainId::Botchain.matches_address(eoa));
         assert!(!ChainId::Solana.matches_address(eoa));
     }
 
@@ -118,6 +126,8 @@ mod tests {
     fn parses_arb_alias() {
         assert_eq!("arb".parse::<ChainId>().unwrap(), ChainId::Arbitrum);
         assert_eq!(ChainId::Arbitrum.play_token_symbol(), "USDC");
-        assert_eq!(ChainId::ALL.len(), 3);
+        assert_eq!("bot".parse::<ChainId>().unwrap(), ChainId::Botchain);
+        assert_eq!(ChainId::Botchain.play_token_symbol(), "USDT");
+        assert_eq!(ChainId::ALL.len(), 4);
     }
 }

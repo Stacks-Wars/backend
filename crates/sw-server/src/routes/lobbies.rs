@@ -111,6 +111,7 @@ async fn verify_vault_join(
     match chain {
         ChainId::Solana => crate::services::solana_vault::assert_tx_ok(state, txid).await,
         ChainId::Arbitrum => crate::services::arbitrum_vault::assert_tx_ok(state, txid).await,
+        ChainId::Botchain => crate::services::botchain_vault::assert_tx_ok(state, txid).await,
         ChainId::Stacks => {
             let hiro = hiro_client(state);
             let reader = vault_reader(state, &hiro);
@@ -129,6 +130,7 @@ async fn verify_vault_leave(
     match chain {
         ChainId::Solana => crate::services::solana_vault::assert_tx_ok(state, txid).await,
         ChainId::Arbitrum => crate::services::arbitrum_vault::assert_tx_ok(state, txid).await,
+        ChainId::Botchain => crate::services::botchain_vault::assert_tx_ok(state, txid).await,
         ChainId::Stacks => {
             let hiro = hiro_client(state);
             let reader = vault_reader(state, &hiro);
@@ -141,6 +143,7 @@ async fn verify_vault_claim(state: &AppState, chain: ChainId, txid: &str) -> App
     match chain {
         ChainId::Solana => crate::services::solana_vault::assert_tx_ok(state, txid).await,
         ChainId::Arbitrum => crate::services::arbitrum_vault::assert_tx_ok(state, txid).await,
+        ChainId::Botchain => crate::services::botchain_vault::assert_tx_ok(state, txid).await,
         ChainId::Stacks => {
             let hiro = hiro_client(state);
             let reader = vault_reader(state, &hiro);
@@ -166,6 +169,7 @@ async fn fresh_wallet_balance(
     match chain {
         ChainId::Solana => crate::services::solana_chain::get_balance(state, user_id).await,
         ChainId::Arbitrum => crate::services::arbitrum_chain::get_balance(state, user_id).await,
+        ChainId::Botchain => crate::services::botchain_chain::get_balance(state, user_id).await,
         ChainId::Stacks => {
             let svc =
                 WalletChainService::new(state.db.clone(), state.redis.clone(), hiro_client(state));
