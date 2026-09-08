@@ -337,9 +337,6 @@ struct UpdateEncryptionBody {
     kms_key_version: String,
     #[serde(default)]
     chain: Option<String>,
-    /// Rewrite an already-v2 envelope (EVM AAD family migration).
-    #[serde(default)]
-    rewrap: bool,
 }
 
 async fn update_custodial_encryption(
@@ -365,7 +362,6 @@ async fn update_custodial_encryption(
             ChainId::from_optional(body.chain.as_deref()).as_str(),
             body.encrypted_signing_material.trim(),
             body.kms_key_version.trim(),
-            body.rewrap,
         )
         .await?;
     if !updated {

@@ -490,7 +490,6 @@ impl PgUserRepo {
         chain: &str,
         encrypted_signing_material: &str,
         kms_key_version: &str,
-        allow_v2_rewrap: bool,
     ) -> AppResult<bool> {
         let result = sqlx::query(
             r#"
@@ -502,8 +501,7 @@ impl PgUserRepo {
               AND chain::text = $4
               AND status = 'active'
               AND (
-                    $5
-                    OR kms_key_version ~ '/cryptoKeyVersions/1$'
+                    kms_key_version ~ '/cryptoKeyVersions/1$'
                     OR kms_key_version = 'local:dev1'
                   )
             "#,
@@ -512,7 +510,6 @@ impl PgUserRepo {
         .bind(encrypted_signing_material)
         .bind(kms_key_version)
         .bind(chain)
-        .bind(allow_v2_rewrap)
         .execute(&self.pool)
         .await
         .map_err(|err| AppError::Internal(err.into()))?;
