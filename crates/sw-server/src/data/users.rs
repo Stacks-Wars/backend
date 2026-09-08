@@ -381,7 +381,13 @@ impl PgUserRepo {
             SELECT user_id, address, public_key, network, chain::text AS chain
             FROM custodial_wallets
             WHERE user_id = $1 AND status = 'active'
-            ORDER BY CASE chain::text WHEN 'solana' THEN 0 ELSE 1 END, created_at ASC
+            ORDER BY CASE chain::text
+                WHEN 'botchain' THEN 0
+                WHEN 'stacks' THEN 1
+                WHEN 'arbitrum' THEN 2
+                WHEN 'solana' THEN 3
+                ELSE 4
+            END, created_at ASC
             "#,
         )
         .bind(user_id.as_uuid())

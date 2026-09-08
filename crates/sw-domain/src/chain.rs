@@ -15,7 +15,7 @@ pub enum ChainId {
 }
 
 impl ChainId {
-    pub const ALL: [Self; 4] = [Self::Stacks, Self::Solana, Self::Arbitrum, Self::Botchain];
+    pub const ALL: [Self; 4] = [Self::Botchain, Self::Stacks, Self::Arbitrum, Self::Solana];
 
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -35,7 +35,7 @@ impl ChainId {
         }
     }
 
-    /// Missing / junk query values fall back to the product default (Solana).
+    /// Missing / junk query values fall back to the product default (BOT Chain).
     pub fn from_optional(s: Option<&str>) -> Self {
         s.map(str::trim)
             .filter(|v| !v.is_empty())
@@ -85,7 +85,7 @@ fn looks_like_stacks_address(address: &str) -> bool {
 
 impl Default for ChainId {
     fn default() -> Self {
-        Self::Solana
+        Self::Botchain
     }
 }
 
@@ -129,5 +129,7 @@ mod tests {
         assert_eq!("bot".parse::<ChainId>().unwrap(), ChainId::Botchain);
         assert_eq!(ChainId::Botchain.play_token_symbol(), "USDT");
         assert_eq!(ChainId::ALL.len(), 4);
+        assert_eq!(ChainId::default(), ChainId::Botchain);
+        assert_eq!(ChainId::ALL[0], ChainId::Botchain);
     }
 }
