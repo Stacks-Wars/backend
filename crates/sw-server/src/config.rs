@@ -31,12 +31,18 @@ const MAIN_SOLANA_VAULT_PROGRAM_ID: &str = "8NZHj9VH9JkqiAg19CK43ZLuK5hn5jXPBnLf
 const MAIN_SOLANA_PLATFORM_WALLET: &str = "931LzmTuFs3k8k73mnKaZoUUYbVZu6ZNAADGVTaupiAN";
 const ARBITRUM_SEPOLIA_RPC: &str = "https://sepolia-rollup.arbitrum.io/rpc";
 const ARBITRUM_ONE_RPC: &str = "https://arb1.arbitrum.io/rpc";
-const DEV_ARBITRUM_PLATFORM: &str = "0x2092cD008184Dd0E01C90Aa14b132B468a69745E";
+const DEV_EVM_PLATFORM: &str = "0x2092cD008184Dd0E01C90Aa14b132B468a69745E";
 const DEV_ARBITRUM_USDC: &str = "0x554fF14eaA5380a99e765a7748D6eb5A6B1AF8c7";
 const DEV_ARBITRUM_VAULT: &str = "0xc704D03f4B09bc21d7cdb36C5FFF9ccB862d612F";
 const MAIN_ARBITRUM_USDC: &str = "0xaf88d065e77c8cC2239327C5EDb3A432268e5831";
 const MAIN_ARBITRUM_VAULT: &str = "0x0B4379B27050048D868376aDBA6a03826bDd6e90";
-const MAIN_ARBITRUM_PLATFORM: &str = "0xD456920A03D7F01864DafA4AB3709ACc999033Aa";
+const MAIN_EVM_PLATFORM: &str = "0xD456920A03D7F01864DafA4AB3709ACc999033Aa";
+const BOTCHAIN_BOHR_RPC: &str = "https://rpc.bohr.life";
+const BOTCHAIN_MAIN_RPC: &str = "https://rpc.botchain.ai";
+const DEV_BOTCHAIN_USDT: &str = "0x5B161eebFE0352F510C2FDf6aFb58C034A99DBf1";
+const DEV_BOTCHAIN_VAULT: &str = "0xBEa87817C05aB529E62BeAD046A151CdF46d1E19";
+const MAIN_BOTCHAIN_USDT: &str = "0xaBabc7Ddc03e501d190C676BF3d92ef0e6e87a3C";
+const MAIN_BOTCHAIN_VAULT: &str = "0x9EbDA94b2DE11C001ea1120fA723e8C579376c9C";
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -65,6 +71,10 @@ pub struct Config {
     pub arbitrum_usdc: String,
     pub arbitrum_vault: String,
     pub arbitrum_platform_wallet: String,
+    pub botchain_rpc_url: String,
+    pub botchain_usdt: String,
+    pub botchain_vault: String,
+    pub botchain_platform_wallet: String,
 }
 
 impl Config {
@@ -167,9 +177,37 @@ impl Config {
             }),
             arbitrum_platform_wallet: optional("ARBITRUM_PLATFORM").unwrap_or_else(|| {
                 if is_dev {
-                    DEV_ARBITRUM_PLATFORM.to_owned()
+                    DEV_EVM_PLATFORM.to_owned()
                 } else {
-                    MAIN_ARBITRUM_PLATFORM.to_owned()
+                    MAIN_EVM_PLATFORM.to_owned()
+                }
+            }),
+            botchain_rpc_url: optional("BOTCHAIN_RPC_URL").unwrap_or_else(|| {
+                if is_dev {
+                    BOTCHAIN_BOHR_RPC.to_owned()
+                } else {
+                    BOTCHAIN_MAIN_RPC.to_owned()
+                }
+            }),
+            botchain_usdt: optional("BOTCHAIN_USDT").unwrap_or_else(|| {
+                if is_dev {
+                    DEV_BOTCHAIN_USDT.to_owned()
+                } else {
+                    MAIN_BOTCHAIN_USDT.to_owned()
+                }
+            }),
+            botchain_vault: optional("BOTCHAIN_VAULT").unwrap_or_else(|| {
+                if is_dev {
+                    DEV_BOTCHAIN_VAULT.to_owned()
+                } else {
+                    MAIN_BOTCHAIN_VAULT.to_owned()
+                }
+            }),
+            botchain_platform_wallet: optional("BOTCHAIN_PLATFORM").unwrap_or_else(|| {
+                if is_dev {
+                    DEV_EVM_PLATFORM.to_owned()
+                } else {
+                    MAIN_EVM_PLATFORM.to_owned()
                 }
             }),
         })
@@ -202,7 +240,10 @@ impl Config {
             ChainId::Arbitrum if !self.arbitrum_platform_wallet.is_empty() => {
                 self.arbitrum_platform_wallet.clone()
             }
-            ChainId::Solana | ChainId::Stacks | ChainId::Arbitrum => {
+            ChainId::Botchain if !self.botchain_platform_wallet.is_empty() => {
+                self.botchain_platform_wallet.clone()
+            }
+            ChainId::Solana | ChainId::Stacks | ChainId::Arbitrum | ChainId::Botchain => {
                 self.platform_wallet().to_owned()
             }
         }

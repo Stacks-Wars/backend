@@ -936,6 +936,15 @@ async fn delete_account(
             available_micro = available_micro.saturating_add(bal.available_micro);
         }
     }
+    if repo
+        .get_custodial_wallet(user_id, "botchain")
+        .await?
+        .is_some()
+    {
+        if let Ok(bal) = crate::services::botchain_chain::get_balance(&state, user_id).await {
+            available_micro = available_micro.saturating_add(bal.available_micro);
+        }
+    }
 
     if available_micro > 0 || pending_claim_micro > 0 {
         return Err(AppError::AccountDeleteBlocked {

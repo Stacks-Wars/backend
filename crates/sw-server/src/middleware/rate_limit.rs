@@ -401,6 +401,10 @@ mod tests {
             arbitrum_usdc: String::new(),
             arbitrum_vault: String::new(),
             arbitrum_platform_wallet: String::new(),
+            botchain_rpc_url: "https://rpc.bohr.life".into(),
+            botchain_usdt: String::new(),
+            botchain_vault: String::new(),
+            botchain_platform_wallet: String::new(),
         };
         AppState::new(config, db, redis, Arc::new(GameRegistry::new()))
     }

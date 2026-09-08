@@ -160,6 +160,10 @@ async fn expire_seat(
                 crate::services::arbitrum_vault::assert_tx_ok(&state, txid).await?;
                 let _ = crate::services::arbitrum_chain::get_balance(&state, user_id).await;
             }
+            ChainId::Botchain => {
+                crate::services::botchain_vault::assert_tx_ok(&state, txid).await?;
+                let _ = crate::services::botchain_chain::get_balance(&state, user_id).await;
+            }
             ChainId::Stacks => {
                 let hiro = HiroClient::new(
                     state.config.hiro_api_url.clone(),

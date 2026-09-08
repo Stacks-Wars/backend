@@ -12,7 +12,7 @@ use crate::config::{MAX_WITHDRAW_MICRO, MIN_WITHDRAW_MICRO, USDCX_ASSET_NAME};
 use crate::data::users::{CustodialWalletInput, PgUserRepo, kms_key_uses_aad};
 use crate::error::{AppError, AppResult};
 use crate::services::hiro::HiroClient;
-use crate::services::{arbitrum_chain, arbitrum_vault, solana_chain};
+use crate::services::{arbitrum_chain, arbitrum_vault, botchain_chain, botchain_vault, solana_chain};
 use crate::services::wallet_chain::WalletChainService;
 use crate::state::AppState;
 
@@ -38,6 +38,7 @@ async fn live_balance(
     match chain {
         ChainId::Solana => solana_chain::get_balance(state, user_id).await,
         ChainId::Arbitrum => arbitrum_chain::get_balance(state, user_id).await,
+        ChainId::Botchain => botchain_chain::get_balance(state, user_id).await,
         ChainId::Stacks => {
             let svc = wallet_chain(state);
             if refresh {
@@ -57,6 +58,7 @@ async fn live_activity(
     match chain {
         ChainId::Solana => solana_chain::list_activity(state, user_id, 50).await,
         ChainId::Arbitrum => arbitrum_chain::list_activity(state, user_id, 50).await,
+        ChainId::Botchain => botchain_chain::list_activity(state, user_id, 50).await,
         ChainId::Stacks => wallet_chain(state).activity(user_id, 50).await,
     }
 }
@@ -259,6 +261,7 @@ async fn complete_withdrawal(
     match chain {
         ChainId::Solana => crate::services::solana_vault::assert_tx_ok(&state, txid).await?,
         ChainId::Arbitrum => arbitrum_vault::assert_tx_ok(&state, txid).await?,
+        ChainId::Botchain => botchain_vault::assert_tx_ok(&state, txid).await?,
         ChainId::Stacks => svc.hiro().require_tx_success(txid).await?,
     }
     svc.release_withdraw_lock(user_id).await?;
@@ -334,6 +337,9 @@ struct UpdateEncryptionBody {
     kms_key_version: String,
     #[serde(default)]
     chain: Option<String>,
+    /// Rewrite an already-v2 envelope (EVM AAD family migration).
+    #[serde(default)]
+    rewrap: bool,
 }
 
 async fn update_custodial_encryption(
@@ -359,6 +365,7 @@ async fn update_custodial_encryption(
             ChainId::from_optional(body.chain.as_deref()).as_str(),
             body.encrypted_signing_material.trim(),
             body.kms_key_version.trim(),
+            body.rewrap,
         )
         .await?;
     if !updated {

@@ -6,6 +6,8 @@ pub mod quest_nudge;
 pub mod realtime;
 pub mod arbitrum_chain;
 pub mod arbitrum_vault;
+pub mod botchain_chain;
+pub mod botchain_vault;
 pub mod solana_chain;
 pub mod solana_vault;
 pub mod telegram;
