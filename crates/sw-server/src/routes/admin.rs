@@ -2,21 +2,16 @@ use axum::extract::{Path, State};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use serde::Deserialize;
-use sw_domain::{ChainId, LobbyId, SeasonId, UserId};
+use sw_domain::{LobbyId, SeasonId, UserId};
 use uuid::Uuid;
 
 use crate::auth::{AuthUser, InternalSecret};
-use crate::config::USDCX_ASSET_NAME;
 use crate::data::lobbies::PgLobbyRepo;
-use crate::data::lobby_runtime::PlayerStateRepo;
 use crate::data::seasons::{PgSeasonRepo, SeasonRepo, UpdateSeasonInput};
 use crate::error::{AppError, AppResult};
-use crate::services::hiro::HiroClient;
 use crate::services::lobby_ttl::{self, StaleLobby};
 use crate::services::quest_nudge;
 use crate::services::realtime;
-use crate::services::vault_verify::VaultReader;
-use crate::services::wallet_chain::WalletChainService;
 use crate::state::AppState;
 
 /// Admin mutations — Write rate tier (still requires admin / internal auth).
@@ -26,12 +21,16 @@ pub fn write_router() -> Router<AppState> {
         .route("/seasons/{season_id}", put(update_season))
         .route("/lobbies/{lobby_id}/expire-seat", post(expire_seat))
         .route("/lobbies/{lobby_id}/expire", post(expire_lobby))
+        .route("/lobbies/{lobby_id}/void-seat", post(void_seat))
+        .route("/lobbies/{lobby_id}/void", post(void_lobby))
         .route("/quests/daily-nudge", post(daily_quest_nudge))
 }
 
 /// Admin reads — Global tier only.
 pub fn read_router() -> Router<AppState> {
-    Router::new().route("/lobbies/stale", get(list_stale_lobbies))
+    Router::new()
+        .route("/lobbies/stale", get(list_stale_lobbies))
+        .route("/lobbies/stale-live", get(list_orphaned_lobbies))
 }
 
 #[derive(Debug, Deserialize)]
@@ -52,7 +51,7 @@ struct UpdateSeasonBody {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct ExpireSeatBody {
+struct SeatRefundBody {
     user_id: Uuid,
     address: String,
     /// Omit / empty when the seat was free (sponsored guest or free lobby).
@@ -104,6 +103,15 @@ async fn list_stale_lobbies(
     Ok(Json(lobby_ttl::list_stale_waiting(&state).await?))
 }
 
+/// Live lobbies whose match actor died with the server. Same seat shape as the
+/// waiting list, so the cron refunds both with one loop.
+async fn list_orphaned_lobbies(
+    State(state): State<AppState>,
+    _secret: InternalSecret,
+) -> AppResult<Json<Vec<StaleLobby>>> {
+    Ok(Json(lobby_ttl::list_orphaned_live(&state).await?))
+}
+
 async fn daily_quest_nudge(
     State(state): State<AppState>,
     _secret: InternalSecret,
@@ -116,12 +124,10 @@ async fn expire_seat(
     State(state): State<AppState>,
     _secret: InternalSecret,
     Path(lobby_id): Path<Uuid>,
-    Json(body): Json<ExpireSeatBody>,
+    Json(body): Json<SeatRefundBody>,
 ) -> AppResult<Json<serde_json::Value>> {
     let lobby_id = LobbyId::from(lobby_id);
-    let user_id = UserId::from(body.user_id);
-    let lobbies = PgLobbyRepo::new(state.db.clone());
-    let lobby = lobbies
+    let lobby = PgLobbyRepo::new(state.db.clone())
         .get_by_id(lobby_id)
         .await?
         .ok_or(AppError::NotFound("lobby not found"))?;
@@ -129,67 +135,66 @@ async fn expire_seat(
     if lobby.status != sw_domain::LobbyStatus::Waiting {
         return Err(AppError::Conflict("lobby not waiting".into()));
     }
-    if !lobby.participants.iter().any(|p| *p == user_id) {
-        return Err(AppError::NotFound("seat not in lobby"));
-    }
 
-    let paid = if lobby.entry_amount_micro <= 0 {
-        0
-    } else if lobby.is_sponsored && lobby.creator_id != user_id {
-        0
-    } else {
-        lobby.entry_amount_micro
-    };
-
-    // Any vault lobby (entry > 0) must prove the seat left the contract map.
-    if lobby.entry_amount_micro > 0 {
-        let txid = body
-            .vault_txid
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| {
-                AppError::BadRequest("vaultTxid required for vault lobby seat".into())
-            })?;
-        match lobby.chain {
-            ChainId::Solana => {
-                crate::services::solana_vault::assert_tx_ok(&state, txid).await?;
-                let _ = crate::services::solana_chain::get_balance(&state, user_id).await;
-            }
-            ChainId::Arbitrum => {
-                crate::services::arbitrum_vault::assert_tx_ok(&state, txid).await?;
-                let _ = crate::services::arbitrum_chain::get_balance(&state, user_id).await;
-            }
-            ChainId::Botchain => {
-                crate::services::botchain_vault::assert_tx_ok(&state, txid).await?;
-                let _ = crate::services::botchain_chain::get_balance(&state, user_id).await;
-            }
-            ChainId::Stacks => {
-                let hiro = HiroClient::new(
-                    state.config.hiro_api_url.clone(),
-                    state.config.hiro_api_key.clone(),
-                    &state.config.usdcx_contract,
-                    USDCX_ASSET_NAME,
-                    Some(state.config.sw_vault_contract.clone()),
-                );
-                let reader = VaultReader::new(&hiro, &state.config.sw_vault_contract);
-                reader
-                    .assert_not_joined(&lobby.path, body.address.trim(), txid)
-                    .await?;
-                let _ = WalletChainService::new(state.db.clone(), state.redis.clone(), hiro)
-                    .refresh_balance(user_id)
-                    .await;
-            }
-        }
-    }
-
-    lobbies.remove_participant(lobby_id, user_id, paid).await?;
-    PlayerStateRepo::new(state.redis.clone())
-        .delete(lobby_id, user_id)
-        .await
-        .ok();
+    lobby_ttl::clear_seat(
+        &state,
+        lobby_id,
+        UserId::from(body.user_id),
+        &body.address,
+        body.vault_txid.as_deref(),
+    )
+    .await?;
 
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+/// Confirm one seat of an orphaned live lobby was refunded, then drop it.
+async fn void_seat(
+    State(state): State<AppState>,
+    _secret: InternalSecret,
+    Path(lobby_id): Path<Uuid>,
+    Json(body): Json<SeatRefundBody>,
+) -> AppResult<Json<serde_json::Value>> {
+    let lobby_id = LobbyId::from(lobby_id);
+    let lobby = PgLobbyRepo::new(state.db.clone())
+        .get_by_id(lobby_id)
+        .await?
+        .ok_or(AppError::NotFound("lobby not found"))?;
+
+    if !matches!(
+        lobby.status,
+        sw_domain::LobbyStatus::Starting | sw_domain::LobbyStatus::InProgress
+    ) {
+        return Err(AppError::Conflict("lobby not live".into()));
+    }
+    if state.engines.is_running(lobby_id) {
+        return Err(AppError::Conflict("match is still running".into()));
+    }
+
+    lobby_ttl::clear_seat(
+        &state,
+        lobby_id,
+        UserId::from(body.user_id),
+        &body.address,
+        body.vault_txid.as_deref(),
+    )
+    .await?;
+
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+/// Finish a live lobby with no running match, once every paid seat is clear.
+async fn void_lobby(
+    State(state): State<AppState>,
+    _secret: InternalSecret,
+    Path(lobby_id): Path<Uuid>,
+) -> AppResult<Json<serde_json::Value>> {
+    let voided = lobby_ttl::void_lobby(&state, LobbyId::from(lobby_id)).await?;
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "lobbyId": voided.id,
+        "path": voided.path,
+    })))
 }
 
 /// Delete a waiting lobby after all seats have been cleared (and refunded if paid).

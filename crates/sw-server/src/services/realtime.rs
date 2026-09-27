@@ -174,6 +174,23 @@ async fn restore_finished_payload(
             .get_by_lobby(lobby.id)
             .await?
     else {
+        // No match row: a void (engine lost to a restart) or a lobby whose
+        // result never got written. Only the void can be shown.
+        if PgLobbyRepo::new(state.db.clone())
+            .voided_at(lobby.id)
+            .await?
+            .is_some()
+        {
+            return Ok(Some(json!({
+                "lobbyId": lobby.id,
+                "lobbyPath": lobby.path,
+                "voided": true,
+                "winners": [],
+                "needsOnChainClaim": false,
+                "needsOnChainRefund": false,
+                "claims": [],
+            })));
+        }
         return Ok(None);
     };
 
