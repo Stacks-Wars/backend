@@ -37,10 +37,13 @@ COPY --from=builder /src/migrations /app/migrations
 ENV HOST=0.0.0.0 \
     PORT=8080 \
     MIGRATIONS_DIR=/app/migrations \
-    RUST_LOG=info,sw_server=info
+    RUST_LOG=info,sw_server=info \
+    NETWORK=main
 
 EXPOSE 8080
 
 USER nobody
 
+# The image is production. `NETWORK=main` above (not just the `--main` flag here)
+# keeps `sw-cron` in main mode when its start command replaces this CMD.
 CMD ["/app/sw-server", "--main"]
