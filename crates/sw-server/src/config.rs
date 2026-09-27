@@ -20,7 +20,7 @@ pub const MAIN_VAULT_CONTRACT: &str =
     "SP299MBHT7FPPP2SKEY73V4DHW67467SED87A4HH4.sw-vault-v0-0-1";
 
 const LOCAL_INTERNAL_API_SECRET: &str = "sw-dev-internal";
-const LOCAL_DATABASE_URL: &str = "postgres://postgres:postgres@127.0.0.1:5433/stacks_wars";
+const LOCAL_DATABASE_URL: &str = "postgres://postgres:postgres@127.0.0.1:5434/stacks_wars";
 const LOCAL_REDIS_URL: &str = "redis://127.0.0.1:6380";
 const LOCAL_APP_URL: &str = "http://localhost:3000";
 const DEV_HIRO_API_URL: &str = "https://api.testnet.hiro.so";

@@ -1,5 +1,5 @@
 # Local infra: Postgres + Redis. Day-to-day is `cargo run` + `bun run dev`.
-# Host ports 5433 / 6380 avoid system postgres and redis on 5432 / 6379.
+# Host ports 5434 / 6380 avoid system postgres and redis on 5432 / 6379.
 #
 #   docker compose up -d postgres redis
 #   docker compose --profile server up --build   # optional full image
@@ -11,7 +11,7 @@ services:
             POSTGRES_USER: postgres
             POSTGRES_PASSWORD: postgres
         ports:
-            - "5433:5432"
+            - "5434:5432"
         volumes:
             - postgres_data:/var/lib/postgresql
         healthcheck:
