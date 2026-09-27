@@ -64,6 +64,10 @@ is false.
 
 - Free waiting lobbies older than 24h are expired by the Rust loop in `main.rs`.
 - Paid waiting lobbies are refunded and expired by the Next cron (`/api/cron/lobby-ttl`), which calls `/admin/lobbies/*` with `x-internal-secret`. Do not duplicate that work in the Rust loop.
+- Live lobbies (`starting` / `in_progress`) are voided by the same cron when
+  their match actor is gone: `/admin/lobbies/stale-live` only returns rows this
+  process has no engine for (plus `LIVE_VOID_GRACE`), seats are refunded, then
+  `/admin/lobbies/{id}/void` finishes the row with a `voided` payload.
 - Daily quest reminders: Next cron (`/api/cron/quest-nudge`, 10:00 UTC) calls `/admin/quests/daily-nudge`. Idempotent per user per UTC day.
 - Admin internal routes authenticate with the `InternalSecret` extractor. The secret is `INTERNAL_API_SECRET`.
 

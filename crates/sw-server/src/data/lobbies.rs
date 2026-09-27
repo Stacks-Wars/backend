@@ -390,7 +390,7 @@ impl PgLobbyRepo {
         Ok(())
     }
 
-    /// Waiting lobbies created before `cutoff` (used by the 24h TTL janitor).
+        /// Waiting lobbies created before `cutoff` (used by the 24h TTL janitor).
     pub async fn list_waiting_older_than(&self, cutoff: DateTime<Utc>) -> AppResult<Vec<Lobby>> {
         let rows = sqlx::query_as::<_, LobbyRow>(
             r#"
@@ -413,6 +413,30 @@ impl PgLobbyRepo {
         rows.into_iter().map(LobbyRow::into_lobby).collect()
     }
 
+    /// Live lobbies not written since `cutoff`. The janitor pairs this with the
+    /// in-process engine registry before treating a row as orphaned.
+    pub async fn list_live_older_than(&self, cutoff: DateTime<Utc>) -> AppResult<Vec<Lobby>> {
+        let rows = sqlx::query_as::<_, LobbyRow>(
+            r#"
+            SELECT id, path, name, description, game_id, creator_id, chain::text AS chain,
+                   entry_amount_micro, pot_micro,
+                   is_private, is_sponsored, status, participants,
+                   created_at, updated_at
+            FROM lobbies
+            WHERE status IN ('starting', 'in_progress')
+              AND updated_at < $1
+            ORDER BY updated_at ASC
+            LIMIT 100
+            "#,
+        )
+        .bind(cutoff)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+
+        rows.into_iter().map(LobbyRow::into_lobby).collect()
+    }
+
     pub async fn delete(&self, id: LobbyId) -> AppResult<()> {
         sqlx::query(r#"DELETE FROM lobbies WHERE id = $1"#)
             .bind(id.as_uuid())
@@ -420,6 +444,34 @@ impl PgLobbyRepo {
             .await
             .map_err(|e| AppError::Internal(e.into()))?;
         Ok(())
+    }
+
+    /// Stamp a voided lobby. `finished` alone cannot say whether a match was
+    /// played, and voided lobbies get no `matches` row.
+    pub async fn mark_voided(&self, id: LobbyId) -> AppResult<()> {
+        sqlx::query(
+            r#"
+            UPDATE lobbies
+            SET voided_at = now(), updated_at = now()
+            WHERE id = $1
+            "#,
+        )
+        .bind(id.as_uuid())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+        Ok(())
+    }
+
+    pub async fn voided_at(&self, id: LobbyId) -> AppResult<Option<DateTime<Utc>>> {
+        sqlx::query_scalar::<_, Option<DateTime<Utc>>>(
+            r#"SELECT voided_at FROM lobbies WHERE id = $1"#,
+        )
+        .bind(id.as_uuid())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))
+        .map(|row| row.flatten())
     }
 
     pub async fn has_active_participation(&self, user_id: UserId) -> AppResult<bool> {
