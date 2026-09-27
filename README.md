@@ -117,12 +117,39 @@ cargo run -p sw-cron -- --help          # list jobs
 
 `season` deliberately touches only Postgres, so its Railway service needs just
 `DATABASE_URL`. The other two publish over WebSocket or send push, so they build
-the server's `AppState` and need the full environment. Setting the cron service's
-start command to `/app/sw-cron <job>` is enough — no separate image or build.
+the server's `AppState` and need the full environment — in main mode a missing
+variable fails the run with a named error instead of falling back to dev values.
 
-Railway cron services run the start command and expect the process to **exit**.
-A run left `Active` causes the next run to be skipped, which is why every job is
-one-shot.
+### Setting the services up on Railway
+
+The image is one build but Railway deploys one service per start command and cron
+schedule, so each job is its own service.
+
+1. Merge and let the existing **sw-server** service redeploy. Its config is
+   unchanged; the image now just contains a second binary.
+2. For each job: **New Service → Deploy from a GitHub repo** → same repo and
+   branch as the server.
+3. On each new service, set:
+   - **Settings → Deploy → Custom Start Command**: `/app/sw-cron <job>`
+   - **Settings → Deploy → Cron Schedule**: the expression for that job
+   - **Variables**: `DATABASE_URL` for `season`; add `REDIS_URL`, `APP_URL`,
+     `INTERNAL_API_SECRET`, `HIRO_API_KEY`, `HELIUS_API_KEY`, `VAPID_PUBLIC_KEY`
+     and `VAPID_PRIVATE_KEY` for the other two. Reference the server's values with
+     `${{sw-server.VARIABLE_NAME}}` instead of copying secrets by hand.
+4. **Do not set a healthcheck path** on a cron service. The process exits after
+   its work, so nothing serves `/health` and the deploy would be marked failed.
+
+`NETWORK=main` is baked into the image, which is what keeps these jobs in main
+mode; a per-service start command replaces the server's `CMD`, so the `--main`
+flag on that `CMD` never runs for them.
+
+Both binaries run migrations on connect, so a new cron service applies any
+pending migration on its first run; no separate migration step is needed.
+
+> Config as Code (`railway.toml`) is deprecated and stops being read on
+> 2026-12-01. New services cannot opt into it, so the settings above live in the
+> dashboard; the healthcheck and restart policy currently in `railway.toml` will
+> need to move to the dashboard (or to Infrastructure as Code) before then.
 
 Useful endpoints:
 
