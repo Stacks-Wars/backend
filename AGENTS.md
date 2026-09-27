@@ -11,6 +11,7 @@ Do not invent architecture. Prefer docs plus the `sw-domain` / `sw-plugin` contr
 | `sw-domain` | Shared IDs, lobby/game/accounting DTOs |
 | `sw-plugin` | `GameFactory`, `GameEngine`, `GameHost`, registry, kit |
 | `sw-server` | Axum HTTP + WS, persistence, vault verification, host impl |
+| `sw-cron` | Scheduled one-shot jobs (seasons, quest nudge, free-lobby TTL) |
 
 Game engines live in separate crates (crates.io `sw_*`), not inside `sw-server` sources. Register them in `crates/sw-server/src/games.rs`.
 
@@ -60,16 +61,33 @@ returning code. It accepts `code`, optional `filename`, and optional `framework`
 `program_autofixer` again. Repeat until `require_another_tool_call_after_fixing`
 is false.
 
-## Janitors
+## Janitors and schedulers
 
-- Free waiting lobbies older than 24h are expired by the Rust loop in `main.rs`.
-- Paid waiting lobbies are refunded and expired by the Next cron (`/api/cron/lobby-ttl`), which calls `/admin/lobbies/*` with `x-internal-secret`. Do not duplicate that work in the Rust loop.
-- Live lobbies (`starting` / `in_progress`) are voided by the same cron when
-  their match actor is gone: `/admin/lobbies/stale-live` only returns rows this
-  process has no engine for (plus `LIVE_VOID_GRACE`), seats are refunded, then
-  `/admin/lobbies/{id}/void` finishes the row with a `voided` payload.
-- Daily quest reminders: Next cron (`/api/cron/quest-nudge`, 10:00 UTC) calls `/admin/quests/daily-nudge`. Idempotent per user per UTC day.
+Scheduled work lives in the `sw-cron` binary (`crates/sw-cron`), not in the API
+process and not on Vercel, except where noted below. One Railway cron service per
+job, all from the same image, start command `/app/sw-cron <job>`:
+
+| Job | Schedule | What it owns |
+| --- | --- | --- |
+| `season` | `0 * * * *` | Creates the upcoming season once the current one is within `SEASON_LEAD` (6h) of ending. Idempotent per window. |
+| `quest-nudge` | `0 10 * * *` | Daily quest reminder. |
+| `lobby-free-ttl` | `*/15 * * * *` | Expires free waiting lobbies older than 24h. |
+
+Railway cron services must **exit**; a run left `Active` makes the next run be
+skipped, so every job is one-shot and nothing may block indefinitely.
+
+- **Paid** waiting lobbies are refunded on-chain by the Next cron
+  (`/api/cron/lobby-ttl`), which calls `/admin/lobbies/*` with `x-internal-secret`.
+  Vault signing keys live in the frontend environment, so this stays there — do
+  not reimplement signing in Rust.
+- Live lobbies (`starting` / `in_progress`) whose match actor is gone are voided
+  by a loop inside `sw-server`: `/admin/lobbies/stale-live` reads the **in-memory**
+  engine registry, which a separate process cannot see. Do not move that sweep into
+  `sw-cron` without first giving engines a cross-process liveness signal.
 - Admin internal routes authenticate with the `InternalSecret` extractor. The secret is `INTERNAL_API_SECRET`.
+- Seasons are numbered continuously (`Season 4`, `Season 5`, …) from the number of
+  existing rows, not from the calendar quarter. `seasons_window_unique` on
+  `(starts_at, ends_at)` is the backstop against a double insert.
 
 ## Games
 

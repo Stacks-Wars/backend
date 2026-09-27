@@ -4,6 +4,7 @@ members = [
     "crates/sw-domain",
     "crates/sw-plugin",
     "crates/sw-server",
+    "crates/sw-cron",
 ]
 
 # Game engines are crates.io `sw_*` packages. Docker context is this directory only.

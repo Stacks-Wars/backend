@@ -16,8 +16,7 @@ pub const VAPID_SUBJECT: &str = "mailto:contact@mail.stackswars.com";
 pub const USDCX_CONTRACT: &str = "SP120SBRBQJ00MCWS7TM5R8WJNTTKD5K0HFRC2CNE.usdcx";
 pub const DEV_USDCX_CONTRACT: &str = "ST1S3D9BTK41ST9GRT225BQFFSYT6VMX7G7MNZ5FB.usdcx-dev";
 pub const DEV_VAULT_CONTRACT: &str = "ST1S3D9BTK41ST9GRT225BQFFSYT6VMX7G7MNZ5FB.sw-vault-v1";
-pub const MAIN_VAULT_CONTRACT: &str =
-    "SP299MBHT7FPPP2SKEY73V4DHW67467SED87A4HH4.sw-vault-v0-0-1";
+pub const MAIN_VAULT_CONTRACT: &str = "SP299MBHT7FPPP2SKEY73V4DHW67467SED87A4HH4.sw-vault-v0-0-1";
 
 const LOCAL_INTERNAL_API_SECRET: &str = "sw-dev-internal";
 const LOCAL_DATABASE_URL: &str = "postgres://postgres:postgres@127.0.0.1:5434/stacks_wars";
@@ -116,7 +115,10 @@ impl Config {
 
         let telegram_bot_token = optional("TELEGRAM_BOT_TOKEN");
         let telegram_chat_id = match optional("TELEGRAM_CHAT_ID") {
-            Some(raw) => Some(raw.parse::<i64>().context("parse TELEGRAM_CHAT_ID as i64")?),
+            Some(raw) => Some(
+                raw.parse::<i64>()
+                    .context("parse TELEGRAM_CHAT_ID as i64")?,
+            ),
             None => None,
         };
         if telegram_bot_token.is_some() ^ telegram_chat_id.is_some() {
@@ -218,11 +220,7 @@ impl Config {
     }
 
     pub fn stacks_network(&self) -> &'static str {
-        if self.is_dev {
-            "testnet"
-        } else {
-            "mainnet"
-        }
+        if self.is_dev { "testnet" } else { "mainnet" }
     }
 
     pub fn platform_wallet(&self) -> &str {
@@ -301,6 +299,17 @@ fn setting(key: &str, local: &str) -> Result<String> {
         return Ok(local.to_owned());
     }
     Err(anyhow!("{key} must be set"))
+}
+
+/// Postgres URL for tools that only need the database (the `sw-cron` binary).
+/// Keeps the local default in one place instead of rebuilding a whole `Config`.
+pub fn database_url_from_env() -> Result<String> {
+    setting("DATABASE_URL", LOCAL_DATABASE_URL)
+}
+
+/// Redis URL for tools that only need the cache (the `sw-cron` binary).
+pub fn redis_url_from_env() -> Result<String> {
+    setting("REDIS_URL", LOCAL_REDIS_URL)
 }
 
 #[cfg(test)]
