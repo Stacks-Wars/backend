@@ -6,7 +6,6 @@ use sw_plugin::GameRegistry;
 use tracing::info;
 
 use sw_server::config::Config;
-use sw_server::data::seasons::PgSeasonRepo;
 use sw_server::games;
 use sw_server::infra::{postgres, redis_client};
 use sw_server::routes;
@@ -28,10 +27,6 @@ async fn main() -> anyhow::Result<()> {
     let db = postgres::connect(&config.database_url)
         .await
         .context("postgres")?;
-    PgSeasonRepo::new(db.clone())
-        .seed_year_to_current_quarter_if_empty()
-        .await
-        .context("seed seasons")?;
     let redis = redis_client::connect(&config.redis_url)
         .await
         .context("redis")?;
@@ -43,22 +38,12 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState::new(config.clone(), db, redis, Arc::new(game_registry));
     sw_server::services::telegram::spawn_bot(state.clone());
 
-    // Free waiting lobbies older than 24h can be purged without on-chain work.
-    // Paid stale lobbies are refunded + expired by the Next cron (/api/cron/lobby-ttl).
-    {
-        let janitor = state.clone();
-        tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(15 * 60));
-            loop {
-                ticker.tick().await;
-                match sw_server::services::lobby_ttl::expire_free_stale_lobbies(&janitor).await {
-                    Ok(0) => {}
-                    Ok(n) => tracing::info!(expired = n, "expired free stale lobbies"),
-                    Err(err) => tracing::warn!(error = %err, "free lobby TTL janitor failed"),
-                }
-            }
-        });
-    }
+    // Seasonal and janitor work runs in `sw-cron` (see backend/README.md):
+    // seasons before a quarter boundary, free stale lobbies on a timer, quest
+    // nudges daily. Paid refunds stay on the Vercel cron because signing keys
+    // live in the frontend environment, and orphaned live lobbies are only
+    // detectable in this process — `/admin/lobbies/stale-live` reads the
+    // in-memory engine registry, so that sweep stays here.
 
     let app = routes::router(state);
 

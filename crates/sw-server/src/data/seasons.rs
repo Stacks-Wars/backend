@@ -71,6 +71,23 @@ impl YearQuarter {
     }
 }
 
+/// Whether the season ending at `ends_at` should get its successor now.
+///
+/// Split out from the repo so the lead window is testable without a database.
+/// A negative remaining time (the boundary already passed, for example while the
+/// cron was down) also counts as due, which is what makes a missed run heal.
+pub fn successor_due(ends_at: DateTime<Utc>, now: DateTime<Utc>, lead: Duration) -> bool {
+    ends_at - now <= lead
+}
+
+/// Postgres `unique_violation`. Used to turn the `seasons_window_unique` index
+/// backstop into a 409 instead of a 500.
+fn is_unique_violation(err: &sqlx::Error) -> bool {
+    err.as_database_error()
+        .and_then(|db| db.code())
+        .is_some_and(|code| code == "23505")
+}
+
 fn normalize_name(name: &str) -> AppResult<String> {
     let name = name.trim().to_owned();
     if name.is_empty() || name.len() > 120 {
@@ -119,7 +136,6 @@ pub trait SeasonRepo: Send + Sync {
     async fn get(&self, id: SeasonId) -> AppResult<Option<Season>>;
     async fn list(&self, limit: i64, offset: i64) -> AppResult<Vec<Season>>;
     async fn latest(&self) -> AppResult<Option<Season>>;
-    async fn is_empty(&self) -> AppResult<bool>;
     async fn create(&self, input: CreateSeasonInput) -> AppResult<Season>;
     async fn update(&self, id: SeasonId, input: UpdateSeasonInput) -> AppResult<Season>;
 }
@@ -157,41 +173,140 @@ impl PgSeasonRepo {
         .await
     }
 
-    /// If `seasons` is empty, insert Season 1..=N for Q1 through the current quarter of this year.
-    pub async fn seed_year_to_current_quarter_if_empty(&self) -> AppResult<Vec<Season>> {
-        if !self.is_empty().await? {
-            return Ok(vec![]);
-        }
-
+    /// Create the successor season when the latest one is within `lead` of its
+    /// end, and only then. Returns `None` when there is nothing to do, which is
+    /// every run except the few hours before a quarter boundary — so at most one
+    /// future season is ever on the list.
+    ///
+    /// Idempotent: the successor's window is derived from the latest season, and
+    /// an existing row for that window short-circuits.
+    pub async fn ensure_upcoming_season(&self, lead: Duration) -> AppResult<Option<Season>> {
         let now = Utc::now();
-        let current = YearQuarter::of(now);
-        let mut created = Vec::with_capacity(current.quarter as usize);
-
-        for quarter in 1..=current.quarter {
-            let yq = YearQuarter {
-                year: current.year,
-                quarter,
-            };
+        let Some(latest) = self.latest().await? else {
+            // Empty table (fresh database): bootstrap the quarter we are in.
+            let yq = YearQuarter::of(now);
             let (starts_at, ends_at) = yq.bounds();
-            let season = self
-                .create(CreateSeasonInput {
-                    name: format!("Season {quarter}"),
-                    description: None,
-                    starts_at,
-                    ends_at,
-                })
-                .await?;
-            created.push(season);
+            return self
+                .create_season_if_absent(starts_at, ends_at)
+                .await
+                .map(Some);
+        };
+
+        let yq = YearQuarter::of(latest.starts_at).next();
+        let (starts_at, ends_at) = yq.bounds();
+        if self.season_starts_at(starts_at).await? {
+            return Ok(None);
+        }
+        if !successor_due(latest.ends_at, now, lead) {
+            return Ok(None);
         }
 
-        info!(
-            count = created.len(),
-            year = current.year,
-            through_quarter = current.quarter,
-            "seeded quarterly seasons"
-        );
+        self.create_season_if_absent(starts_at, ends_at)
+            .await
+            .map(Some)
+    }
 
-        Ok(created)
+    /// Insert `Season {n}` for the given window, numbering past the highest
+    /// existing season so the sequence never restarts with the calendar year.
+    /// Concurrent runs lose the unique-index race and return the existing row.
+    async fn create_season_if_absent(
+        &self,
+        starts_at: DateTime<Utc>,
+        ends_at: DateTime<Utc>,
+    ) -> AppResult<Season> {
+        for _ in 0..64 {
+            let name = self.next_season_name().await?;
+            let row = sqlx::query_as::<_, SeasonRow>(
+                r#"
+                INSERT INTO seasons (name, description, starts_at, ends_at)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (starts_at, ends_at) DO NOTHING
+                RETURNING id, name, description, starts_at, ends_at, created_at
+                "#,
+            )
+            .bind(&name)
+            .bind(Option::<String>::None)
+            .bind(starts_at)
+            .bind(ends_at)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|err| AppError::Internal(err.into()))?;
+
+            if let Some(row) = row {
+                let season = Season::from(row);
+                info!(
+                    season_id = season.id.0,
+                    name = %season.name,
+                    starts_at = %season.starts_at,
+                    "created upcoming season"
+                );
+                return Ok(season);
+            }
+
+            // Window exists: either another run won, or the name was taken.
+            if let Some(existing) = self.season_by_window(starts_at, ends_at).await? {
+                return Ok(existing);
+            }
+        }
+        Err(AppError::Internal(anyhow::anyhow!(
+            "could not allocate a season name"
+        )))
+    }
+
+    async fn next_season_name(&self) -> AppResult<String> {
+        let count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*)::bigint FROM seasons")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|err| AppError::Internal(err.into()))?;
+
+        let mut number = count + 1;
+        while self.season_name_taken(number).await? {
+            number += 1;
+        }
+        Ok(format!("Season {number}"))
+    }
+
+    async fn season_name_taken(&self, number: i64) -> AppResult<bool> {
+        let exists = sqlx::query_scalar::<_, bool>(
+            r#"SELECT EXISTS(SELECT 1 FROM seasons WHERE name = $1)"#,
+        )
+        .bind(format!("Season {number}"))
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|err| AppError::Internal(err.into()))?;
+        Ok(exists)
+    }
+
+    async fn season_starts_at(&self, starts_at: DateTime<Utc>) -> AppResult<bool> {
+        let exists = sqlx::query_scalar::<_, bool>(
+            r#"SELECT EXISTS(SELECT 1 FROM seasons WHERE starts_at = $1)"#,
+        )
+        .bind(starts_at)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|err| AppError::Internal(err.into()))?;
+        Ok(exists)
+    }
+
+    async fn season_by_window(
+        &self,
+        starts_at: DateTime<Utc>,
+        ends_at: DateTime<Utc>,
+    ) -> AppResult<Option<Season>> {
+        let row = sqlx::query_as::<_, SeasonRow>(
+            r#"
+            SELECT id, name, description, starts_at, ends_at, created_at
+            FROM seasons
+            WHERE starts_at = $1 AND ends_at = $2
+            "#,
+        )
+        .bind(starts_at)
+        .bind(ends_at)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|err| AppError::Internal(err.into()))?;
+
+        Ok(row.map(Season::from))
     }
 }
 
@@ -266,14 +381,6 @@ impl SeasonRepo for PgSeasonRepo {
         Ok(row.map(Season::from))
     }
 
-    async fn is_empty(&self) -> AppResult<bool> {
-        let count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*)::bigint FROM seasons")
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|err| AppError::Internal(err.into()))?;
-        Ok(count == 0)
-    }
-
     async fn create(&self, input: CreateSeasonInput) -> AppResult<Season> {
         if input.ends_at <= input.starts_at {
             return Err(AppError::BadRequest("endsAt must be after startsAt".into()));
@@ -294,7 +401,16 @@ impl SeasonRepo for PgSeasonRepo {
         .bind(input.ends_at)
         .fetch_one(&self.pool)
         .await
-        .map_err(|err| AppError::Internal(err.into()))?;
+        .map_err(|err| {
+            // `seasons_window_unique`: the window already exists. The scheduled
+            // job creates the upcoming season before the boundary, so an admin
+            // creating the same quarter by hand is a conflict, not a failure.
+            if is_unique_violation(&err) {
+                AppError::Conflict("a season already covers that window".into())
+            } else {
+                AppError::Internal(err.into())
+            }
+        })?;
 
         Ok(Season::from(row))
     }
@@ -349,5 +465,77 @@ mod tests {
         assert_eq!(start, Utc.with_ymd_and_hms(2026, 7, 1, 0, 0, 0).unwrap());
         let q4_start = Utc.with_ymd_and_hms(2026, 10, 1, 0, 0, 0).unwrap();
         assert_eq!(end, q4_start - Duration::microseconds(1));
+    }
+
+    #[test]
+    fn q4_rolls_into_next_year() {
+        let q4 = YearQuarter {
+            year: 2026,
+            quarter: 4,
+        };
+        assert_eq!(
+            q4.next(),
+            YearQuarter {
+                year: 2027,
+                quarter: 1
+            }
+        );
+    }
+
+    /// The boundary the cron watches: Q4 ends a microsecond before Jan 1.
+    #[test]
+    fn q4_bounds_stop_before_new_year() {
+        let (start, end) = YearQuarter {
+            year: 2026,
+            quarter: 4,
+        }
+        .bounds();
+        assert_eq!(start, Utc.with_ymd_and_hms(2026, 10, 1, 0, 0, 0).unwrap());
+        let q1_2027 = Utc.with_ymd_and_hms(2027, 1, 1, 0, 0, 0).unwrap();
+        assert_eq!(end, q1_2027 - Duration::microseconds(1));
+    }
+
+    /// Successor windows must line up: Q3 ends where Q4 begins.
+    #[test]
+    fn quarter_windows_are_contiguous() {
+        let q3 = YearQuarter {
+            year: 2026,
+            quarter: 3,
+        };
+        let (_, q3_end) = q3.bounds();
+        let (q4_start, _) = q3.next().bounds();
+        assert_eq!(q4_start - q3_end, Duration::microseconds(1));
+    }
+
+    const LEAD: Duration = Duration::hours(6);
+
+    #[test]
+    fn successor_not_due_while_the_season_has_time_left() {
+        let now = Utc.with_ymd_and_hms(2026, 9, 10, 0, 0, 0).unwrap();
+        let ends_at = Utc.with_ymd_and_hms(2026, 9, 30, 23, 59, 59).unwrap();
+        assert!(!successor_due(ends_at, now, LEAD));
+    }
+
+    #[test]
+    fn successor_due_inside_the_lead_window() {
+        let now = Utc.with_ymd_and_hms(2026, 9, 30, 18, 0, 0).unwrap();
+        let ends_at = Utc.with_ymd_and_hms(2026, 9, 30, 23, 59, 59).unwrap();
+        assert!(successor_due(ends_at, now, LEAD));
+    }
+
+    #[test]
+    fn successor_due_exactly_at_the_lead_edge() {
+        let ends_at = Utc.with_ymd_and_hms(2026, 9, 30, 23, 0, 0).unwrap();
+        let now = ends_at - LEAD;
+        assert!(successor_due(ends_at, now, LEAD));
+    }
+
+    /// A run after the boundary still creates the season, so a skipped run
+    /// during the lead window is recoverable.
+    #[test]
+    fn successor_due_when_the_boundary_already_passed() {
+        let ends_at = Utc.with_ymd_and_hms(2026, 9, 30, 23, 59, 59).unwrap();
+        let now = Utc.with_ymd_and_hms(2026, 10, 1, 4, 0, 0).unwrap();
+        assert!(successor_due(ends_at, now, LEAD));
     }
 }

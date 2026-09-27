@@ -1,0 +1,21 @@
+[package]
+name = "sw-cron"
+version.workspace = true
+edition.workspace = true
+license-file = "../../LICENSE"
+description = "Scheduled one-shot jobs for Stacks Wars (seasons, janitor, nudges)"
+
+[[bin]]
+name = "sw-cron"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+chrono = { workspace = true }
+dotenvy = { workspace = true }
+sqlx = { workspace = true }
+sw-plugin = { workspace = true }
+sw-server = { path = "../sw-server" }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

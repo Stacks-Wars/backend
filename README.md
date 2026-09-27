@@ -11,6 +11,7 @@ Clients live in a separate frontend. This repository does **not** depend on thos
 | `sw-domain` | Shared domain types (`User`, `Lobby`, seasons, wallet DTOs, …)                    |
 | `sw-plugin` | Portable game plugin contract (`GameEngine`, `GameFactory`, `GameHost`, registry) |
 | `sw-server` | HTTP + WebSocket server binary (Axum / Tokio)                                     |
+| `sw-cron`   | Scheduled one-shot jobs (seasons, quest nudge, free-lobby TTL)                    |
 
 **Stack**
 
@@ -20,6 +21,8 @@ Clients live in a separate frontend. This repository does **not** depend on thos
 - **Better Auth** on the frontend owns end-user sessions; this API verifies those JWTs (JWKS) on user and admin routes
 
 `cargo run -p sw-server` is local/dev and needs no `.env` (Compose Postgres + Redis). Production is `--main` / `NETWORK=main`, which requires `DATABASE_URL`, `REDIS_URL`, `HIRO_API_KEY`, `APP_URL`, `INTERNAL_API_SECRET`, and `HELIUS_API_KEY`. `APP_URL` is the site origin (JWKS + deep links).
+
+Scheduled jobs run from the same image as `sw-cron` (see [Scheduled jobs](#scheduled-jobs-sw-cron)). The API process itself schedules nothing; it only serves.
 
 SQL migrations live in `migrations/`. App users are upserted via `POST /users` (Bearer JWT; `id` = Better Auth `sub`). Custodial wallets live under `GET|POST /users/{id}/custodial-wallet`. Platform balances use `/wallet` (each chain's official explorer / RPC + Redis cache, chain activity, withdrawals) — vault escrow is on-chain. Admin season routes require a verified JWT email on the `ADMIN` allowlist.
 
@@ -84,16 +87,42 @@ cargo run -p sw-server
 
 ## Docker / Railway
 
-Build context is this `backend/` directory. Railway should run **sw-server** (Dockerfile) + a **Redis** plugin. Postgres can stay on Neon (`DATABASE_URL`).
+Build context is this `backend/` directory. One image ships **two** binaries:
+`sw-server` (the API, default `CMD`) and `sw-cron` (scheduled jobs). Railway runs
+the API as one service and each cron job as its own service on the same image.
 
 ```bash
 docker build -t sw-server .
 docker run --rm -p 8080:8080 --env-file .env sw-server
+docker run --rm --env-file .env sw-server /app/sw-cron season
 ```
 
 Railway uses `railway.toml` (`builder = DOCKERFILE`).
 
 `HOST`, `PORT`, and `MIGRATIONS_DIR` are set in the image. Railway may still inject `PORT`. Health check: `GET /health`.
+
+## Scheduled jobs (`sw-cron`)
+
+```bash
+cargo run -p sw-cron -- season          # one-shot, then exits
+cargo run -p sw-cron -- season --loop   # run on its natural cadence locally
+cargo run -p sw-cron -- --help          # list jobs
+```
+
+| Job | Cron | Environment |
+| --- | --- | --- |
+| `season` | `0 * * * *` | `DATABASE_URL` only |
+| `quest-nudge` | `0 10 * * *` | server env (`REDIS_URL`, `APP_URL`, `INTERNAL_API_SECRET`, `HIRO_API_KEY`/`HELIUS_API_KEY`, VAPID keys) |
+| `lobby-free-ttl` | `*/15 * * * *` | server env |
+
+`season` deliberately touches only Postgres, so its Railway service needs just
+`DATABASE_URL`. The other two publish over WebSocket or send push, so they build
+the server's `AppState` and need the full environment. Setting the cron service's
+start command to `/app/sw-cron <job>` is enough — no separate image or build.
+
+Railway cron services run the start command and expect the process to **exit**.
+A run left `Active` causes the next run to be skipped, which is why every job is
+one-shot.
 
 Useful endpoints:
 
