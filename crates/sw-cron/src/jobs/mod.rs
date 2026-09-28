@@ -11,7 +11,7 @@ use sw_plugin::GameRegistry;
 use sw_server::config::Config;
 use sw_server::infra::redis_client;
 use sw_server::state::AppState;
-use tracing::info;
+use tracing::{error, info};
 
 use crate::connect_db;
 
@@ -40,4 +40,35 @@ pub async fn app_state() -> Result<AppState> {
         redis,
         Arc::new(GameRegistry::new()),
     ))
+}
+
+/// Run every scheduled job in one pass, sharing a single `AppState`.
+///
+/// Each job decides whether it has work, so this is the whole reason one hourly
+/// service is enough. A failing job does not stop the others: each failure is
+/// logged and the process still exits non-zero so Railway marks the run failed.
+pub async fn run_all() -> Result<()> {
+    let state = app_state().await?;
+    let mut failed: Vec<&'static str> = Vec::new();
+
+    // Season only needs Postgres, so it reuses the pool the other two need
+    // anyway instead of opening a second one (and re-running migrations).
+    if let Err(err) = season::tick(&state.db).await {
+        error!(job = "season", error = ?err, "job failed");
+        failed.push("season");
+    }
+    if let Err(err) = lobby_free_ttl::tick(&state).await {
+        error!(job = "lobby-free-ttl", error = ?err, "job failed");
+        failed.push("lobby-free-ttl");
+    }
+    if let Err(err) = quest_nudge::tick(&state).await {
+        error!(job = "quest-nudge", error = ?err, "job failed");
+        failed.push("quest-nudge");
+    }
+
+    if failed.is_empty() {
+        info!("scheduled run complete");
+        return Ok(());
+    }
+    anyhow::bail!("failed jobs: {}", failed.join(", "))
 }

@@ -104,47 +104,47 @@ Railway uses `railway.toml` (`builder = DOCKERFILE`).
 ## Scheduled jobs (`sw-cron`)
 
 ```bash
-cargo run -p sw-cron -- season          # one-shot, then exits
-cargo run -p sw-cron -- season --loop   # run on its natural cadence locally
-cargo run -p sw-cron -- --help          # list jobs
+cargo run -p sw-cron -- all              # every due job, then exit (what Railway runs)
+cargo run -p sw-cron -- season           # just one job, for local work
+cargo run -p sw-cron -- all --loop       # keep ticking hourly instead of exiting
+cargo run -p sw-cron -- --help           # list jobs
 ```
 
-| Job | Cron | Environment |
-| --- | --- | --- |
-| `season` | `0 * * * *` | `DATABASE_URL` only |
-| `quest-nudge` | `0 10 * * *` | server env (`REDIS_URL`, `APP_URL`, `INTERNAL_API_SECRET`, `HIRO_API_KEY`/`HELIUS_API_KEY`, VAPID keys) |
-| `lobby-free-ttl` | `*/15 * * * *` | server env |
+One service, one schedule: `0 * * * *`. Each job gates itself, so the hourly tick
+covers all three cadences.
 
-`season` deliberately touches only Postgres, so its Railway service needs just
-`DATABASE_URL`. The other two publish over WebSocket or send push, so they build
-the server's `AppState` and need the full environment — in main mode a missing
-variable fails the run with a named error instead of falling back to dev values.
+| Job | Due when |
+| --- | --- |
+| `season` | the current season ends within 6h and its successor does not exist |
+| `quest-nudge` | UTC hour is 10–21 and today's send slots are unclaimed |
+| `lobby-free-ttl` | a free waiting lobby is older than 24h |
 
-### Setting the services up on Railway
+`all` builds one `AppState` and shares it across the jobs. A failing job is
+logged, the rest still run, and the process exits non-zero so Railway records a
+failed run.
 
-The image is one build but Railway deploys one service per start command and cron
-schedule, so each job is its own service.
+### Setting the service up on Railway
 
 1. Merge and let the existing **sw-server** service redeploy. Its config is
-   unchanged; the image now just contains a second binary.
-2. For each job: **New Service → Deploy from a GitHub repo** → same repo and
-   branch as the server.
-3. On each new service, set:
-   - **Settings → Deploy → Custom Start Command**: `/app/sw-cron <job>`
-   - **Settings → Deploy → Cron Schedule**: the expression for that job
-   - **Variables**: `DATABASE_URL` for `season`; add `REDIS_URL`, `APP_URL`,
-     `INTERNAL_API_SECRET`, `HIRO_API_KEY`, `HELIUS_API_KEY`, `VAPID_PUBLIC_KEY`
-     and `VAPID_PRIVATE_KEY` for the other two. Reference the server's values with
-     `${{sw-server.VARIABLE_NAME}}` instead of copying secrets by hand.
-4. **Do not set a healthcheck path** on a cron service. The process exits after
-   its work, so nothing serves `/health` and the deploy would be marked failed.
+   unchanged; the image now contains a second binary.
+2. **New Service → Deploy from a GitHub repo** → same repo and branch as the
+   server. (One extra service; the API is untouched.)
+3. On that service set:
+   - **Settings → Deploy → Custom Start Command**: `/app/sw-cron all`
+   - **Settings → Deploy → Cron Schedule**: `0 * * * *`
+   - **Variables**: `DATABASE_URL`, `REDIS_URL`, `APP_URL`,
+     `INTERNAL_API_SECRET`, `HIRO_API_KEY`, `HELIUS_API_KEY`,
+     `VAPID_PUBLIC_KEY` and `VAPID_PRIVATE_KEY`. Reference the server's values
+     with `${{sw-server.VARIABLE_NAME}}` instead of copying secrets by hand.
+4. **Do not set a healthcheck path.** The process exits after its work, so
+   nothing serves `/health` and the deploy would be marked failed.
 
 `NETWORK=main` is baked into the image, which is what keeps these jobs in main
 mode; a per-service start command replaces the server's `CMD`, so the `--main`
 flag on that `CMD` never runs for them.
 
-Both binaries run migrations on connect, so a new cron service applies any
-pending migration on its first run; no separate migration step is needed.
+The binary runs migrations on connect, so the first run applies any pending
+migration; no separate migration step is needed.
 
 > Config as Code (`railway.toml`) is deprecated and stops being read on
 > 2026-12-01. New services cannot opt into it, so the settings above live in the

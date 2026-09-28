@@ -64,14 +64,18 @@ is false.
 ## Janitors and schedulers
 
 Scheduled work lives in the `sw-cron` binary (`crates/sw-cron`), not in the API
-process and not on Vercel, except where noted below. One Railway cron service per
-job, all from the same image, start command `/app/sw-cron <job>`:
+process. One Railway cron service runs it **hourly** (`0 * * * *`); each job
+checks its own condition, so one schedule covers three cadences:
 
-| Job | Schedule | What it owns |
-| --- | --- | --- |
-| `season` | `0 * * * *` | Creates the upcoming season once the current one is within `SEASON_LEAD` (6h) of ending. Idempotent per window. |
-| `quest-nudge` | `0 10 * * *` | Daily quest reminder. |
-| `lobby-free-ttl` | `*/15 * * * *` | Expires free waiting lobbies older than 24h. |
+| Job | Due when |
+| --- | --- |
+| `season` | the current season ends within `SEASON_LEAD` (6h) and its successor does not exist |
+| `quest-nudge` | UTC hour is inside `NUDGE_FROM_HOUR..=NUDGE_UNTIL_HOUR` (10–21) and today's send slots are unclaimed |
+| `lobby-free-ttl` | a free waiting lobby is older than 24h |
+
+`sw-cron all` runs every due job in one pass, sharing one `AppState`; naming a
+single job runs just that one. A failing job is logged, the others still run, and
+the process exits non-zero so Railway marks the run failed.
 
 Railway cron services must **exit**; a run left `Active` makes the next run be
 skipped, so every job is one-shot and nothing may block indefinitely.
@@ -88,6 +92,10 @@ skipped, so every job is one-shot and nothing may block indefinitely.
 - Seasons are numbered continuously (`Season 4`, `Season 5`, …) from the number of
   existing rows, not from the calendar quarter. `seasons_window_unique` on
   `(starts_at, ends_at)` is the backstop against a double insert.
+- A job that becomes repeatable must be idempotent, because an hourly schedule
+  will call it many times per day. `quest_nudges` claims one slot per user per UTC
+  day for exactly this reason — and it claims whether or not Web Push is
+  configured, so a retry cannot re-notify a user over the WebSocket.
 
 ## Games
 
