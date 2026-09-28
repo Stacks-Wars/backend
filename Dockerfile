@@ -5,8 +5,8 @@
 #
 # One image, two services:
 #   - sw-server: the API + realtime server (default CMD, health check /health).
-#   - sw-cron:   scheduled jobs, one per Railway cron service
-#                (start command `/app/sw-cron <job>`), which must exit.
+#   - sw-cron:   scheduled jobs on an hourly schedule
+#                (start command `/app/sw-cron all`), which must exit.
 #
 # Redis → Railway Redis plugin (REDIS_URL).
 # Postgres → Neon or Railway Postgres (DATABASE_URL).

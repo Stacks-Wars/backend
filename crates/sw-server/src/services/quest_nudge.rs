@@ -4,8 +4,6 @@ use chrono::Utc;
 use serde::Serialize;
 use sw_domain::UserId;
 
-use tracing::warn;
-
 use crate::data::quest_nudges::{QuestNudgeRepo, unique_user_ids};
 use crate::error::AppResult;
 use crate::quests::period;
@@ -23,17 +21,16 @@ pub struct DailyNudgeResult {
 }
 
 /// Insert today's nudge rows and spawn fanout. Safe to retry: unique (user, day).
+///
+/// Slots are claimed whether or not push delivery is configured. The ledger is
+/// what makes a retry idempotent, and the WebSocket notice still goes out when
+/// push is unavailable — so tying the claim to `push.enabled()` would let a
+/// scheduled retry notify the same user again.
 pub async fn start(state: AppState) -> AppResult<DailyNudgeResult> {
     let clock = period::daily(Utc::now());
     let period_id = clock.id.clone();
     let repo = QuestNudgeRepo::new(state.db.clone());
-    let push_on = state.push.enabled();
-    let subs = if push_on {
-        repo.claim_and_list(&period_id, clock.starts_at).await?
-    } else {
-        warn!("web push disabled; daily quest nudge will not claim send slots");
-        repo.list_eligible(&period_id, clock.starts_at).await?
-    };
+    let subs = repo.claim_and_list(&period_id, clock.starts_at).await?;
     let user_ids = unique_user_ids(&subs);
     let targeted = user_ids.len();
 

@@ -8,6 +8,7 @@
 
 use anyhow::{Context, Result};
 use chrono::Duration;
+use sqlx::PgPool;
 use tracing::info;
 
 use sw_server::data::seasons::{PgSeasonRepo, SeasonRepo};
@@ -17,7 +18,12 @@ pub const SEASON_LEAD: Duration = Duration::hours(6);
 
 pub async fn run() -> Result<()> {
     let db = crate::connect_db().await?;
-    let repo = PgSeasonRepo::new(db);
+    tick(&db).await
+}
+
+/// Needs Postgres only, so the combined run passes in the pool it already has.
+pub async fn tick(db: &PgPool) -> Result<()> {
+    let repo = PgSeasonRepo::new(db.clone());
 
     match repo.ensure_upcoming_season(SEASON_LEAD).await? {
         Some(season) => info!(

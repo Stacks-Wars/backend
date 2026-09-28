@@ -64,13 +64,15 @@ async fn run(job: Job, looped: bool) -> Result<()> {
 }
 
 fn usage() -> String {
-    let jobs: Vec<&str> = Job::ALL.iter().map(|job| job.name()).collect();
+    let individual: Vec<&str> = Job::EACH.iter().map(|job| job.name()).collect();
     format!(
         "sw-cron — scheduled jobs\n\n\
-         usage: sw-cron <{}> [--loop]\n\n\
-         Runs once and exits unless --loop is passed.\n\
-         Schedules live in Railway service settings; see backend/README.md.",
-        jobs.join("|")
+         usage: sw-cron <{}|{}> [--loop]\n\n\
+         `all` runs every due job in one pass, which is what the Railway service\n\
+         runs hourly; naming a job runs just that one. Runs once and exits unless\n\
+         --loop is passed.",
+        Job::All.name(),
+        individual.join("|")
     )
 }
 
@@ -89,6 +91,8 @@ mod tests {
 
     #[test]
     fn jobs_parse_case_insensitively() {
+        assert_eq!(Job::parse("all"), Some(Job::All));
+        assert_eq!(Job::parse(" ALL "), Some(Job::All));
         assert_eq!(Job::parse("season"), Some(Job::Season));
         assert_eq!(Job::parse(" SEASON "), Some(Job::Season));
         assert_eq!(Job::parse("quest-nudge"), Some(Job::QuestNudge));
@@ -96,9 +100,13 @@ mod tests {
         assert_eq!(Job::parse("nope"), None);
     }
 
+    /// `all` must not collide with a job name, since both are parsed by string.
     #[test]
     fn job_names_are_unique() {
-        let mut names: Vec<&str> = Job::ALL.iter().map(|job| job.name()).collect();
+        let mut names: Vec<&str> = std::iter::once(Job::All)
+            .chain(Job::EACH)
+            .map(|job| job.name())
+            .collect();
         names.sort_unstable();
         let before = names.len();
         names.dedup();
@@ -108,8 +116,17 @@ mod tests {
     #[test]
     fn usage_lists_every_job() {
         let usage = usage();
-        for job in Job::ALL {
+        for job in std::iter::once(Job::All).chain(Job::EACH) {
             assert!(usage.contains(job.name()), "usage omits {}", job.name());
+        }
+    }
+
+    /// The combined run is the Railway entry point, so it must be the default
+    /// shape described in the help output.
+    #[test]
+    fn every_job_shares_the_hourly_cadence() {
+        for job in std::iter::once(Job::All).chain(Job::EACH) {
+            assert_eq!(job.interval().as_secs(), 60 * 60, "{}", job.name());
         }
     }
 }
