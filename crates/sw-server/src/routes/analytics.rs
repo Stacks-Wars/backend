@@ -3,7 +3,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use chrono::{DateTime, Duration, NaiveDate, TimeZone, Utc};
 use serde::Deserialize;
-use sw_domain::SeasonId;
+use sw_domain::{ChainId, SeasonId};
 
 use crate::data::analytics::{
     AnalyticsFilter, AnalyticsReport, AnalyticsScope, cache_get, cache_set, earliest_event_at,
@@ -51,18 +51,7 @@ async fn resolve_filter(state: &AppState, query: AnalyticsQuery) -> AppResult<An
         .map(str::trim)
         .filter(|v| !v.is_empty() && *v != "all")
         .map(ToOwned::to_owned);
-    let chain = query
-        .chain
-        .as_deref()
-        .map(str::trim)
-        .filter(|v| !v.is_empty() && *v != "all")
-        .map(|v| v.to_ascii_lowercase());
-    if let Some(ref chain) = chain
-        && chain != "solana"
-        && chain != "stacks"
-    {
-        return Err(AppError::BadRequest("unknown chain".into()));
-    }
+    let chain = parse_chain_filter(query.chain.as_deref())?;
 
     let now = Utc::now();
 
@@ -128,6 +117,19 @@ async fn resolve_filter(state: &AppState, query: AnalyticsQuery) -> AppResult<An
     }
 }
 
+/// `all` and blanks mean "no chain filter". Anything else has to be a known
+/// chain, normalised through the domain enum so aliases (`bot`, `stx`) resolve
+/// to the lowercase ids stored in Postgres.
+fn parse_chain_filter(raw: Option<&str>) -> AppResult<Option<String>> {
+    let Some(value) = raw.map(str::trim).filter(|v| !v.is_empty() && *v != "all") else {
+        return Ok(None);
+    };
+    value
+        .parse::<ChainId>()
+        .map(|chain| Some(chain.as_str().to_owned()))
+        .map_err(AppError::BadRequest)
+}
+
 /// Date-only values are UTC midnights. `end` makes a date inclusive by advancing
 /// one day so the query window stays half-open.
 fn parse_bound(raw: &str, end: bool) -> AppResult<DateTime<Utc>> {
@@ -153,4 +155,53 @@ fn parse_bound(raw: &str, end: bool) -> AppResult<DateTime<Utc>> {
                 .parse::<DateTime<Utc>>()
                 .map_err(|_| AppError::BadRequest("invalid timestamp".into()))
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chain_filter_accepts_every_settlement_chain() {
+        for id in ChainId::ALL {
+            assert_eq!(
+                parse_chain_filter(Some(id.as_str())).unwrap(),
+                Some(id.as_str().to_owned()),
+                "{id} should be filterable"
+            );
+        }
+    }
+
+    #[test]
+    fn chain_filter_treats_blank_and_all_as_no_filter() {
+        assert_eq!(parse_chain_filter(None).unwrap(), None);
+        assert_eq!(parse_chain_filter(Some("")).unwrap(), None);
+        assert_eq!(parse_chain_filter(Some("   ")).unwrap(), None);
+        assert_eq!(parse_chain_filter(Some("all")).unwrap(), None);
+    }
+
+    #[test]
+    fn chain_filter_normalises_case_and_aliases() {
+        assert_eq!(
+            parse_chain_filter(Some("BOT")).unwrap(),
+            Some("botchain".into())
+        );
+        assert_eq!(
+            parse_chain_filter(Some(" stx ")).unwrap(),
+            Some("stacks".into())
+        );
+        assert_eq!(
+            parse_chain_filter(Some("SOL")).unwrap(),
+            Some("solana".into())
+        );
+        assert_eq!(
+            parse_chain_filter(Some("arb")).unwrap(),
+            Some("arbitrum".into())
+        );
+    }
+
+    #[test]
+    fn chain_filter_rejects_unknown_chain() {
+        assert!(parse_chain_filter(Some("dogecoin")).is_err());
+    }
 }
